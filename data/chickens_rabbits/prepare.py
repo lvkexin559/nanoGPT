@@ -158,6 +158,10 @@ def main():
                         help="lower bound of H for val_ood (must be > h-max-train)")
     parser.add_argument("--h-max-ood", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--out-dir", default=None,
+                        help="output dir for {train,val,val_ood}.bin + meta.pkl. "
+                             "Default: this file's own directory. Pass a fresh path "
+                             "(e.g. data/chickens_rabbits_h40/) to keep prior runs.")
     args = parser.parse_args()
 
     if args.h_min_ood <= args.h_max_train:
@@ -167,7 +171,12 @@ def main():
         )
 
     formatter = FORMATTERS[args.format]
-    out_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = (
+        os.path.abspath(args.out_dir)
+        if args.out_dir is not None
+        else os.path.dirname(os.path.abspath(__file__))
+    )
+    os.makedirs(out_dir, exist_ok=True)
 
     sanity_check(args.format, formatter)
 

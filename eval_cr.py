@@ -38,12 +38,33 @@ from model import GPTConfig, GPT  # noqa: E402
 # ---------------------------------------------------------------------------
 # Section 1 · Format-aware logic
 #
-# Both fmt_A and fmt_B use the SAME prompt template `H={H} F={F}\n`. The model
-# decides whether to continue with `c=...` (fmt_A) or `2H=...` (fmt_B). The
-# parser is what differs — that's where format awareness lives.
+# fmt_A and fmt_B use the prompt template `H={H} F={F}\n` (raw numbers).
+# fmt_C reverses + zero-pads every number (S5.c trick), so its prompt is
+# `H={rev(H)} F={rev(F)}\n`. The model decides whether to continue with
+# `c=...` (A/C) or `2H=...` (B). Per-format differences live in build_prompt
+# and the parsers.
 # ---------------------------------------------------------------------------
 
-def build_prompt(H: int, F: int) -> str:
+_REV_WIDTH = 3  # must match prepare.py's REV_WIDTH for fmt_C
+
+
+def _rev_pad(n: int, width: int = _REV_WIDTH) -> str:
+    """8 -> '008' -> '800'. Mirrors prepare.py.rev_pad."""
+    return str(n).zfill(width)[::-1]
+
+
+def _unrev_int(s: str) -> int:
+    """Decode a reversed-and-padded digit string back to its integer value.
+    '500' -> reverse -> '005' -> int -> 5. Tolerates any length: a 1-digit
+    output like '5' is treated as the number 5 (no padding to undo)."""
+    return int(s[::-1]) if s else 0
+
+
+def build_prompt(H: int, F: int, fmt: str = "A") -> str:
+    """Format-aware prompt builder. fmt_C requires reversed-padded H and F
+    since that's how the training data was tokenized."""
+    if fmt == "C":
+        return f"H={_rev_pad(H)} F={_rev_pad(F)}\n"
     return f"H={H} F={F}\n"
 
 
@@ -79,7 +100,19 @@ def parse_fmt_B(first_line: str):
     return out
 
 
-PARSERS = {"A": parse_fmt_A, "B": parse_fmt_B}
+def parse_fmt_C(first_line: str):
+    """fmt_C reversed-direct answer shape: 'c=PPP r=QQQ' where PPP and QQQ are
+    zero-padded reversed digits (e.g. 'c=300 r=500' means c=3, r=5).
+    Returns {'c': int, 'r': int} with values decoded back to original integers.
+    No negative-sign support: padded reversed never produces a minus."""
+    m_c = re.search(r"c=(\d+)", first_line)
+    m_r = re.search(r"r=(\d+)", first_line)
+    if m_c is None or m_r is None:
+        return {}
+    return {"c": _unrev_int(m_c.group(1)), "r": _unrev_int(m_r.group(1))}
+
+
+PARSERS = {"A": parse_fmt_A, "B": parse_fmt_B, "C": parse_fmt_C}
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +134,12 @@ PARSER_TESTS = [
     ("2H=6 D=34 r=17 c=",       "B", False, {}),                    # S5.a OOD failure case
     ("r=10 c=2",                "B", True,  {"r": 10, "c": 2}),     # partial CoT (no 2H/D)
     ("2H=24 r=10",              "B", False, {}),                    # missing c → parse fail
+    # fmt_C: reversed-padded direct answer. '300' reverses to '003' = 3
+    ("c=300 r=500",             "C", True,  {"c": 3, "r": 5}),
+    ("c=610 r=400",             "C", True,  {"c": 16, "r": 4}),     # two-digit values
+    ("c=001 r=050",             "C", True,  {"c": 100, "r": 50}),   # three-digit (OOD shape)
+    ("c=300 r=",                "C", False, {}),                    # truncated mid-emit
+    ("",                        "C", False, {}),
 ]
 
 
@@ -212,7 +251,7 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     samples_shown = 0
     for i in range(n):
         H, F, c_gt, r_gt = gen_sample(h_min, h_max, rng)
-        prompt = build_prompt(H, F)
+        prompt = build_prompt(H, F, fmt)
         gen = predict_one(model, encode, decode, prompt, max_new_tokens,
                           device, temperature, top_k)
         first_line = gen.split("\n")[0]
@@ -242,11 +281,14 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
             if c_pred == c_gt: step_correct["c"] += 1
             if r_pred == r_gt: step_correct["r"] += 1
 
-        # digit accuracy: char-by-char compare predicted answer to GT answer
-        gt_str = (
-            f"c={c_gt} r={r_gt}" if fmt == "A"
-            else f"2H={2*H} D={F-2*H} r={r_gt} c={c_gt}"
-        )
+        # digit accuracy: char-by-char compare predicted answer to GT answer.
+        # For fmt_C the GT is the reversed-padded string the model was trained to emit.
+        if fmt == "A":
+            gt_str = f"c={c_gt} r={r_gt}"
+        elif fmt == "C":
+            gt_str = f"c={_rev_pad(c_gt)} r={_rev_pad(r_gt)}"
+        else:  # fmt == "B"
+            gt_str = f"2H={2*H} D={F-2*H} r={r_gt} c={c_gt}"
         for a, b in zip(first_line.ljust(len(gt_str)), gt_str):
             digit_total += 1
             if a == b:

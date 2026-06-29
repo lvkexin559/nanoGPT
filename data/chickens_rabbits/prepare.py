@@ -10,7 +10,7 @@ solution: r = (F - 2H) / 2,  c = H - r;  constraint: 2H <= F <= 4H, F even.
 We synthesize samples by drawing (H, c) uniformly and deriving F = 2c + 4r,
 which guarantees every sample is legal by construction.
 
-Three prompt formats are supported (set via --format):
+Four prompt formats are supported (set via --format):
   A  direct answer:    "H=8 F=22\nc=3 r=5\n"
   B  chain-of-thought: "H=8 F=22\n2H=16 D=6 r=3 c=5\n"
                        (D = F - 2H = 2r, then c = H - r)
@@ -19,6 +19,12 @@ Three prompt formats are supported (set via --format):
                        so the model emits low-order digit first — same trick
                        human grade-school uses for column addition. Width 3
                        covers H<=50 + F<=200, with no surprises at OOD.
+  D  reversed + CoT:   "H=800 F=220\n2H=610 D=600 r=300 c=500\n"   (S5.d)
+                       fmt_B's CoT structure with fmt_C's reversed digits on
+                       EVERY number (including the intermediate 2H, D). The
+                       combination Lee et al. 2023 advocate; tests whether
+                       reversed-low-order-emit synergizes with explicit
+                       multi-step scaffolding.
 
 Three splits are produced:
   train.bin       train samples (H in [2, 20], allows duplicates)
@@ -32,6 +38,7 @@ Usage:
     python data/chickens_rabbits/prepare.py            # default fmt_A
     python data/chickens_rabbits/prepare.py --format B # CoT
     python data/chickens_rabbits/prepare.py --format C --out-dir data/chickens_rabbits_rev/
+    python data/chickens_rabbits/prepare.py --format D --out-dir data/chickens_rabbits_revcot/
 """
 import argparse
 import os
@@ -108,7 +115,18 @@ def fmt_C(H: int, F: int, c: int, r: int) -> str:
     return f"H={rev_pad(H)} F={rev_pad(F)}\nc={rev_pad(c)} r={rev_pad(r)}\n"
 
 
-FORMATTERS = {"A": fmt_A, "B": fmt_B, "C": fmt_C}
+def fmt_D(H: int, F: int, c: int, r: int) -> str:
+    """Reversed-digit + CoT. Every number — including intermediate 2H, D —
+    is rev_pad'd, so each step's low-order digit comes out first.
+    fmt_B says '2H=16 D=6 r=3 c=5', fmt_D says '2H=610 D=600 r=300 c=500'.
+    Tests the «reversal × scratchpad» synergy at the heart of the
+    "Teaching Arithmetic" paper."""
+    return (f"H={rev_pad(H)} F={rev_pad(F)}\n"
+            f"2H={rev_pad(2*H)} D={rev_pad(F - 2*H)} "
+            f"r={rev_pad(r)} c={rev_pad(c)}\n")
+
+
+FORMATTERS = {"A": fmt_A, "B": fmt_B, "C": fmt_C, "D": fmt_D}
 
 
 def build_split(n: int, h_min: int, h_max: int, formatter, seed: int) -> str:
@@ -149,9 +167,9 @@ def sanity_check(format_key: str, formatter) -> None:
                 f"formatter {format_key!r} emitted char {ch!r} not in vocab"
             )
 
-    # 5. fmt_C-specific: rev_pad must be perfectly invertible across our number
+    # 5. fmt_C/D rev_pad must be perfectly invertible across our number
     #    range, otherwise the eval parser will silently decode wrong integers
-    if format_key == "C":
+    if format_key in ("C", "D"):
         for n in [0, 1, 5, 8, 10, 16, 22, 40, 50, 100, 168, 200]:
             padded_rev = rev_pad(n)
             decoded = int(padded_rev[::-1])
@@ -171,7 +189,7 @@ def sanity_check(format_key: str, formatter) -> None:
 def report_unique_combos(text: str, formatter_key: str) -> None:
     """Eyeball how many *unique* (H,F,c,r) tuples landed in this split, so we
     notice when 100k samples collapse to a tiny set of repeats.
-    For fmt_C we reverse-decode the (H,F) string back to its real value, so
+    For fmt_C/D we reverse-decode the (H,F) string back to its real value, so
     the count reflects unique *real* combinations, not reversed strings."""
     seen = set()
     for line in text.split("\n"):
@@ -180,7 +198,7 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
         try:
             head, tail = line.split(" F=")
             H_str, F_str = head[2:], tail
-            if formatter_key == "C":
+            if formatter_key in ("C", "D"):
                 H = int(H_str[::-1])
                 F = int(F_str[::-1])
             else:
@@ -249,7 +267,7 @@ def main():
                             "h_range": [h_lo, h_hi]}
 
     # OOD safety check: no train sample should have H > h_max_train.
-    # For fmt_C the on-disk string is reverse-padded, so we decode back before
+    # For fmt_C/D the on-disk string is reverse-padded, so we decode back before
     # comparing — otherwise H=8 ("800") would falsely look like H=800 > 20.
     train_arr = np.fromfile(os.path.join(out_dir, "train.bin"), dtype=np.uint16)
     train_text = decode(train_arr.tolist())
@@ -258,7 +276,7 @@ def main():
         if line.startswith("H="):
             try:
                 H_str = line.split(" F=")[0][2:]
-                H = int(H_str[::-1]) if args.format == "C" else int(H_str)
+                H = int(H_str[::-1]) if args.format in ("C", "D") else int(H_str)
                 if H > args.h_max_train:
                     leaked += 1
             except (ValueError, IndexError):

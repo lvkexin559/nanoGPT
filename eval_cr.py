@@ -61,9 +61,9 @@ def _unrev_int(s: str) -> int:
 
 
 def build_prompt(H: int, F: int, fmt: str = "A") -> str:
-    """Format-aware prompt builder. fmt_C requires reversed-padded H and F
-    since that's how the training data was tokenized."""
-    if fmt == "C":
+    """Format-aware prompt builder. fmt_C and fmt_D both use reversed-padded
+    H and F (their training data is reversed at the prompt level too)."""
+    if fmt in ("C", "D"):
         return f"H={_rev_pad(H)} F={_rev_pad(F)}\n"
     return f"H={H} F={F}\n"
 
@@ -112,7 +112,27 @@ def parse_fmt_C(first_line: str):
     return {"c": _unrev_int(m_c.group(1)), "r": _unrev_int(m_r.group(1))}
 
 
-PARSERS = {"A": parse_fmt_A, "B": parse_fmt_B, "C": parse_fmt_C}
+def parse_fmt_D(first_line: str):
+    """fmt_D reversed CoT answer: '2H=AAA D=BBB r=XXX c=YYY' (each field is
+    zero-padded reversed). Same per-step structure as parse_fmt_B but every
+    captured group is _unrev_int'd back to its original integer.
+    Requires at least r and c to be parsed."""
+    out = {}
+    for key, pattern in [
+        ("two_h", r"2H=(\d+)"),
+        ("D",     r"D=(\d+)"),
+        ("r",     r"r=(\d+)"),
+        ("c",     r"c=(\d+)"),
+    ]:
+        m = re.search(pattern, first_line)
+        if m is not None:
+            out[key] = _unrev_int(m.group(1))
+    if "r" not in out or "c" not in out:
+        return {}
+    return out
+
+
+PARSERS = {"A": parse_fmt_A, "B": parse_fmt_B, "C": parse_fmt_C, "D": parse_fmt_D}
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +160,13 @@ PARSER_TESTS = [
     ("c=001 r=050",             "C", True,  {"c": 100, "r": 50}),   # three-digit (OOD shape)
     ("c=300 r=",                "C", False, {}),                    # truncated mid-emit
     ("",                        "C", False, {}),
+    # fmt_D: reversed CoT. e.g. '2H=610 D=600 r=300 c=500' decodes to 2H=16, D=6, r=3, c=5.
+    # Watch out: '040' is a palindrome -> reverse stays '040' -> int = 40, not 4.
+    ("2H=610 D=600 r=300 c=500", "D", True,  {"two_h": 16, "D": 6, "r": 3, "c": 5}),
+    ("2H=400 D=080 r=040 c=000", "D", True,  {"two_h": 4, "D": 80, "r": 40, "c": 0}),  # palindrome '040'
+    ("2H=610 D=600 c=500 r=300", "D", True,  {"two_h": 16, "D": 6, "c": 5, "r": 3}),  # order-tolerant
+    ("2H=610 D=600 r=",          "D", False, {}),                   # truncated before c
+    ("r=300 c=500",              "D", True,  {"r": 3, "c": 5}),     # partial CoT, still valid final
 ]
 
 
@@ -245,7 +272,7 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     digit_total = 0
     digit_correct = 0
 
-    step_keys = ["two_h", "D", "r", "c"] if fmt == "B" else ["c", "r"]
+    step_keys = ["two_h", "D", "r", "c"] if fmt in ("B", "D") else ["c", "r"]
     step_correct = {k: 0 for k in step_keys}
 
     samples_shown = 0
@@ -272,7 +299,7 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
             em += 1
 
         # per-step accuracy (each step judged independently)
-        if fmt == "B":
+        if fmt in ("B", "D"):
             if result.get("two_h") == 2 * H:    step_correct["two_h"] += 1
             if result.get("D") == F - 2 * H:    step_correct["D"] += 1
             if result.get("r") == r_gt:         step_correct["r"] += 1
@@ -282,13 +309,16 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
             if r_pred == r_gt: step_correct["r"] += 1
 
         # digit accuracy: char-by-char compare predicted answer to GT answer.
-        # For fmt_C the GT is the reversed-padded string the model was trained to emit.
+        # fmt_C/D GTs are reversed-padded strings — the actual on-disk form.
         if fmt == "A":
             gt_str = f"c={c_gt} r={r_gt}"
+        elif fmt == "B":
+            gt_str = f"2H={2*H} D={F-2*H} r={r_gt} c={c_gt}"
         elif fmt == "C":
             gt_str = f"c={_rev_pad(c_gt)} r={_rev_pad(r_gt)}"
-        else:  # fmt == "B"
-            gt_str = f"2H={2*H} D={F-2*H} r={r_gt} c={c_gt}"
+        else:  # fmt == "D"
+            gt_str = (f"2H={_rev_pad(2*H)} D={_rev_pad(F-2*H)} "
+                      f"r={_rev_pad(r_gt)} c={_rev_pad(c_gt)}")
         for a, b in zip(first_line.ljust(len(gt_str)), gt_str):
             digit_total += 1
             if a == b:

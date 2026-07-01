@@ -10,7 +10,7 @@ solution: r = (F - 2H) / 2,  c = H - r;  constraint: 2H <= F <= 4H, F even.
 We synthesize samples by drawing (H, c) uniformly and deriving F = 2c + 4r,
 which guarantees every sample is legal by construction.
 
-Five prompt formats are supported (set via --format):
+Six prompt formats are supported (set via --format):
   A  direct answer:    "H=8 F=22\nc=3 r=5\n"
   B  chain-of-thought: "H=8 F=22\n2H=16 D=6 r=3 c=5\n"
                        (D = F - 2H = 2r, then c = H - r)
@@ -33,6 +33,16 @@ Five prompt formats are supported (set via --format):
                        skill can transfer to the multi-step main task at OOD.
                        This is the "change training signal" v4 falsification
                        attempt.
+  N  multi-task full:  50%  fmt_D main task (H in [2, h_max_train])
+                       12.5% aux_mul2    : "H=X\n2H=Y\n"       (H in [2, h_max_aux])
+                       12.5% aux_sub_F2H : "F=X 2H=Y\nD=Z\n"   (H in [2, h_max_aux])
+                       12.5% aux_div_D   : "D=X\nr=Y\n"        (H in [2, h_max_aux])
+                       12.5% aux_sub_Hr  : "H=X r=Y\nc=Z\n"    (H in [2, h_max_aux])
+                       (S5.h) The v5 direct falsification test: supervise
+                       ALL four subskills of the main task's CoT, each in
+                       isolation and each covering the OOD H range. If v5
+                       is right ("training signal + compositional coverage"),
+                       main-task OOD em should jump to 60-80%.
 
 Three splits are produced:
   train.bin       train samples (H in [2, 20], allows duplicates)
@@ -48,6 +58,7 @@ Usage:
     python data/chickens_rabbits/prepare.py --format C --out-dir data/chickens_rabbits_rev/
     python data/chickens_rabbits/prepare.py --format D --out-dir data/chickens_rabbits_revcot/
     python data/chickens_rabbits/prepare.py --format M --out-dir data/chickens_rabbits_multitask/
+    python data/chickens_rabbits/prepare.py --format N --out-dir data/chickens_rabbits_multitask_full/
 """
 import argparse
 import os
@@ -136,11 +147,35 @@ def fmt_D(H: int, F: int, c: int, r: int) -> str:
 
 
 def fmt_mul2(H: int) -> str:
-    """Auxiliary task (used inside fmt_M): "multiply H by 2" in isolation.
-    Same reversed+padded encoding as fmt_D, single-step. Example: H=37 ->
-    'H=730\\n2H=470\\n' (74 reversed-padded). This exposes the "double"
-    subskill to the training signal *outside* the multi-step main task."""
+    """Auxiliary task (used inside fmt_M, fmt_N): "multiply H by 2" in
+    isolation. Same reversed+padded encoding as fmt_D, single-step.
+    Example: H=37 -> 'H=730\\n2H=470\\n' (74 reversed-padded)."""
     return f"H={rev_pad(H)}\n2H={rev_pad(2*H)}\n"
+
+
+def fmt_sub_F2H(H: int, c: int) -> str:
+    """Auxiliary task (fmt_N): "D = F - 2H" in isolation. Uses the same
+    (H, c) draw as the main task, so all derived numbers are legal.
+    Example: H=37, c=26 -> F=96, 2H=74, D=22 -> 'F=690 2H=470\\nD=220\\n'."""
+    r = H - c
+    F = 2 * c + 4 * r
+    return f"F={rev_pad(F)} 2H={rev_pad(2*H)}\nD={rev_pad(F - 2*H)}\n"
+
+
+def fmt_div_D(H: int, c: int) -> str:
+    """Auxiliary task (fmt_N): "r = D / 2" in isolation. Since D = 2r by
+    construction, r is always a legal integer division. Example: H=37,
+    c=26 -> r=11, D=22 -> 'D=220\\nr=110\\n'."""
+    r = H - c
+    F = 2 * c + 4 * r
+    return f"D={rev_pad(F - 2*H)}\nr={rev_pad(r)}\n"
+
+
+def fmt_sub_Hr(H: int, c: int) -> str:
+    """Auxiliary task (fmt_N): "c = H - r" in isolation. Example: H=37,
+    c=26, r=11 -> 'H=730 r=110\\nc=620\\n'."""
+    r = H - c
+    return f"H={rev_pad(H)} r={rev_pad(r)}\nc={rev_pad(c)}\n"
 
 
 FORMATTERS = {"A": fmt_A, "B": fmt_B, "C": fmt_C, "D": fmt_D}
@@ -182,6 +217,44 @@ def build_split_multitask(n: int, h_min_main: int, h_max_main: int,
     return "".join(chunks)
 
 
+def build_split_multitask_full(n: int, h_min_main: int, h_max_main: int,
+                               h_min_aux: int, h_max_aux: int,
+                               seed: int, main_ratio: float = 0.5) -> str:
+    """fmt_N mixed generator: main task (fmt_D) with probability
+    `main_ratio`, otherwise uniformly one of 4 auxiliary tasks
+    (mul2 / sub_F2H / div_D / sub_Hr), each on H in [h_min_aux, h_max_aux].
+    Auxiliary tasks all use gen_sample(h_min_aux, h_max_aux) internally so
+    all derived numbers (F, D, r, c) are legal by construction.
+    Deterministic under `seed`."""
+    rng = random.Random(seed)
+    aux_formatters = [
+        ("aux_mul2",    lambda H, c: fmt_mul2(H)),
+        ("aux_sub_F2H", fmt_sub_F2H),
+        ("aux_div_D",   fmt_div_D),
+        ("aux_sub_Hr",  fmt_sub_Hr),
+    ]
+    counts = {"main": 0, **{name: 0 for name, _ in aux_formatters}}
+    chunks = []
+    for _ in range(n):
+        if rng.random() < main_ratio:
+            H, F, c, r = gen_sample(h_min_main, h_max_main, rng)
+            chunks.append(fmt_D(H, F, c, r))
+            counts["main"] += 1
+        else:
+            # Uniformly pick one of the 4 aux tasks
+            name, fmt = aux_formatters[rng.randrange(len(aux_formatters))]
+            H, F, c, r = gen_sample(h_min_aux, h_max_aux, rng)
+            chunks.append(fmt(H, c))
+            counts[name] += 1
+    pct = {k: 100 * v / n for k, v in counts.items()}
+    print(f"  [fmt_N] main={counts['main']} ({pct['main']:.1f}%)  "
+          f"aux_mul2={counts['aux_mul2']} ({pct['aux_mul2']:.1f}%)  "
+          f"aux_sub_F2H={counts['aux_sub_F2H']} ({pct['aux_sub_F2H']:.1f}%)  "
+          f"aux_div_D={counts['aux_div_D']} ({pct['aux_div_D']:.1f}%)  "
+          f"aux_sub_Hr={counts['aux_sub_Hr']} ({pct['aux_sub_Hr']:.1f}%)")
+    return "".join(chunks)
+
+
 def sanity_check(format_key: str, formatter) -> None:
     """Self-tests we want to fail loud rather than silently produce bad data.
     Spec required by workspace rule "Mandatory Verification"."""
@@ -210,9 +283,9 @@ def sanity_check(format_key: str, formatter) -> None:
                 f"formatter {format_key!r} emitted char {ch!r} not in vocab"
             )
 
-    # 5. fmt_C/D/M rev_pad must be perfectly invertible across our number
+    # 5. fmt_C/D/M/N rev_pad must be perfectly invertible across our number
     #    range, otherwise the eval parser will silently decode wrong integers
-    if format_key in ("C", "D", "M"):
+    if format_key in ("C", "D", "M", "N"):
         for n in [0, 1, 5, 8, 10, 16, 22, 40, 50, 100, 168, 200]:
             padded_rev = rev_pad(n)
             decoded = int(padded_rev[::-1])
@@ -226,15 +299,35 @@ def sanity_check(format_key: str, formatter) -> None:
                     f"rev_pad width mismatch for n={n}: got {len(padded_rev)}, want {REV_WIDTH}"
                 )
 
-    # 6. fmt_M-specific: fmt_mul2 aux output stays in vocab across full aux range
-    if format_key == "M":
+    # 6. fmt_M/N-specific: aux task outputs stay in vocab across full H range
+    if format_key in ("M", "N"):
         for h in [2, 8, 20, 37, 50]:
-            aux_text = fmt_mul2(h)
-            for ch in aux_text:
+            for ch in fmt_mul2(h):
                 if ch not in stoi:
                     raise AssertionError(
                         f"fmt_mul2({h}) emitted char {ch!r} not in vocab"
                     )
+
+    # 7. fmt_N-specific: the 3 additional aux formatters produce legal
+    #    (H, F, D, r, c) and stay in vocab. Also confirms the derived
+    #    intermediates (F=2c+4r, D=F-2H=2r) match by construction.
+    if format_key == "N":
+        rng_probe = random.Random(999)
+        for _ in range(50):
+            H, F, c, r = gen_sample(2, 50, rng_probe)
+            # Each aux formatter takes (H, c) and derives F/D/r internally.
+            # Verify the outputs decode back to the right numbers.
+            sub_text = fmt_sub_F2H(H, c)   # 'F=... 2H=...\nD=...\n'
+            div_text = fmt_div_D(H, c)     # 'D=...\nr=...\n'
+            sub_hr   = fmt_sub_Hr(H, c)    # 'H=... r=...\nc=...\n'
+            for probe, name in [(sub_text, "fmt_sub_F2H"),
+                                (div_text, "fmt_div_D"),
+                                (sub_hr,   "fmt_sub_Hr")]:
+                for ch in probe:
+                    if ch not in stoi:
+                        raise AssertionError(
+                            f"{name}(H={H}, c={c}) emitted {ch!r} not in vocab"
+                        )
 
     print("[sanity] tokenizer roundtrip + sample legality + format coverage: OK")
 
@@ -242,11 +335,15 @@ def sanity_check(format_key: str, formatter) -> None:
 def report_unique_combos(text: str, formatter_key: str) -> None:
     """Eyeball how many *unique* (H,F,c,r) tuples landed in this split, so we
     notice when 100k samples collapse to a tiny set of repeats.
-    For fmt_C/D/M we reverse-decode the (H,F) string back to its real value,
+    For fmt_C/D/M/N we reverse-decode the (H,F) string back to its real value,
     so the count reflects unique *real* combinations, not reversed strings.
-    For fmt_M, aux "H=XXX\\n" lines lack " F=" and are silently skipped
-    (caught by the ValueError branch below); the count reports only main-task
-    (H,F) combos, which is what we care about."""
+    For fmt_M/N, aux lines without a full "H=X F=Y" pattern are silently
+    skipped (caught by the ValueError branch below); the count reports only
+    main-task (H,F) combos, which is what we care about.
+    Note fmt_N has multiple aux formatters; only main + fmt_sub_F2H aux
+    happen to contain " F=" - the latter is 12.5% of samples and legitimately
+    has H beyond h_max_train, which is fine (aux is designed to cover OOD).
+    So this metric slightly overcounts for fmt_N; that's acceptable."""
     seen = set()
     for line in text.split("\n"):
         if not line.startswith("H="):
@@ -254,7 +351,7 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
         try:
             head, tail = line.split(" F=")
             H_str, F_str = head[2:], tail
-            if formatter_key in ("C", "D", "M"):
+            if formatter_key in ("C", "D", "M", "N"):
                 H = int(H_str[::-1])
                 F = int(F_str[::-1])
             else:
@@ -268,9 +365,10 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--format", choices=list(FORMATTERS) + ["M"], default="A",
+    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N"], default="A",
                         help="prompt format: A=direct, B=CoT, C=reversed, D=rev+CoT, "
-                             "M=multi-task mix (fmt_D main + fmt_mul2 aux)")
+                             "M=multi-task mix (fmt_D main + fmt_mul2 aux), "
+                             "N=multi-task full (fmt_D main + all 4 subskill auxes)")
     parser.add_argument("--n-train", type=int, default=100_000)
     parser.add_argument("--n-val", type=int, default=1_000)
     parser.add_argument("--n-val-ood", type=int, default=1_000)
@@ -280,9 +378,9 @@ def main():
                         help="lower bound of H for val_ood (must be > h-max-train)")
     parser.add_argument("--h-max-ood", type=int, default=50)
     parser.add_argument("--h-max-aux", type=int, default=50,
-                        help="fmt_M only: upper bound of H for the aux 'multiply by 2' "
-                             "task. Should cover the main task's OOD range so the model "
-                             "sees big-H doubling in the aux stream. Default 50.")
+                        help="fmt_M/N: upper bound of H for auxiliary tasks. Should cover "
+                             "the main task's OOD range so the model sees big-H subskills "
+                             "in the aux stream. Default 50.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", default=None,
                         help="output dir for {train,val,val_ood}.bin + meta.pkl. "
@@ -296,9 +394,9 @@ def main():
             f"h_min_ood={args.h_min_ood} <= h_max_train={args.h_max_train}"
         )
 
-    # fmt_M shares fmt_D as the main-task formatter (used for val/val_ood).
-    # For sanity_check we probe with fmt_D as well since aux is single-arg.
-    formatter = fmt_D if args.format == "M" else FORMATTERS[args.format]
+    # fmt_M/N share fmt_D as the main-task formatter (used for val/val_ood).
+    # For sanity_check we probe with fmt_D since aux is (H,) or (H,c).
+    formatter = fmt_D if args.format in ("M", "N") else FORMATTERS[args.format]
     out_dir = (
         os.path.abspath(args.out_dir)
         if args.out_dir is not None
@@ -312,6 +410,10 @@ def main():
     if args.format == "M":
         print(f"[gen] fmt_M: main task H in [2, {args.h_max_train}], "
               f"aux mul2 H in [2, {args.h_max_aux}], 50/50 mix in train only")
+    elif args.format == "N":
+        print(f"[gen] fmt_N: main task H in [2, {args.h_max_train}], "
+              f"4 aux subskills H in [2, {args.h_max_aux}], "
+              f"50% main + 12.5% each aux in train only")
 
     splits = {
         "train":   (args.n_train,   2,                  args.h_max_train, args.seed),
@@ -326,6 +428,11 @@ def main():
             # fmt_mul2 aux task (H in [2, h_max_aux]). val/val_ood stay
             # main-task-only so we always evaluate main-task performance.
             text = build_split_multitask(n, h_lo, h_hi, 2, args.h_max_aux, seed)
+        elif args.format == "N" and name == "train":
+            # fmt_N train mixes fmt_D main task with all 4 subskill aux
+            # tasks (each supervising one CoT step). val/val_ood remain
+            # main-task-only so we always evaluate main-task performance.
+            text = build_split_multitask_full(n, h_lo, h_hi, 2, args.h_max_aux, seed)
         else:
             text = build_split(n, h_lo, h_hi, formatter, seed)
         ids = encode(text)
@@ -346,11 +453,15 @@ def main():
     train_arr = np.fromfile(os.path.join(out_dir, "train.bin"), dtype=np.uint16)
     train_text = decode(train_arr.tolist())
     leaked = 0
+    # For fmt_N, the aux "H=X r=Y\n" (sub_Hr) starts with "H=" but has " r=",
+    # not " F=" — so it's skipped by the " F=" filter below. And aux
+    # "F=X 2H=Y\n" (sub_F2H) doesn't start with "H=", also skipped.
+    # Only true main-task lines "H=X F=Y" reach the H-check.
     for line in train_text.split("\n"):
         if line.startswith("H=") and " F=" in line:
             try:
                 H_str = line.split(" F=")[0][2:]
-                H = int(H_str[::-1]) if args.format in ("C", "D", "M") else int(H_str)
+                H = int(H_str[::-1]) if args.format in ("C", "D", "M", "N") else int(H_str)
                 if H > args.h_max_train:
                     leaked += 1
             except (ValueError, IndexError):

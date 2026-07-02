@@ -409,6 +409,7 @@ python eval_cr.py --ckpt out-cr-cot/ckpt.pt --ood-h-min 51 --ood-h-max 100
 | **G 换 training signal** (fmt_M multi-task，0.79M) | **100.0%** | **100.0%** | **6.5%** | **86.2%** | **OOD 2H per-step 从 2.5% → 70.0% (+67.5pp)** —— 独立"乘 2"辅助 task 让子技能 transfer；OOD em 微升但受限于其他 3 步无监督；**v4 → v5:training signal + compositional coverage**，见 §5.10 |
 | **H fmt_N 全 4 subskill** (multi-task full，0.79M) | **100.0%** | **100.0%** | **15.5%** | **84.3%** | **v5 direct falsification test — 中性偏 bear**：4 步 per-step 全部 18-22%(比 fmt_D 涨但远低于 fmt_M 的 70%)；parse_fail 39.5% (multi-task 引发 pattern 混淆)；**v5 → v5.1：coverage 必要但不够，还需 subskill depth**，见 §5.11 |
 | **I fmt_N v2 加 depth** (每 aux 50k，0.79M) | **100.0%** | **100.0%** | **17.0%** | **91.9%** | **v5.1 depth 假设 3/4 命中**：2H/D/r per-step 从 22% 跳到 73-75%（跟 fmt_M 的 70% 完美对齐）、parse_fail 从 39.5% → 7.0%；**但 c per-step 仍 21% 完全没动**(cascade tail transfer 失败) → **v5.2：subskill transfer 效率不均，靠后 subskill 需 context alignment (loss_mask)**，见 §5.12 |
+| **J fmt_L loss-mask SFT** (0.79M) | **100.0%** | **100.0%** | **4.5%** | **82.8%** | **v5.2 部分证伪 → v5.3**：loss_mask alone 不 fix（train_loss 0.22→0.094 证明 mask 机制 work，但 OOD em 从 fmt_N v2 的 17% 反跌到 4.5%）；根因是 **fmt_L 完全没引入 OOD subskill 曝光**——loss_mask 改梯度分布，不改数据分布；**v5.3：需要 aux 曝光 OOD H (a) + aux 用完整主任务 context (b) 两者组合**，见 §5.13 |
 | D + loss masking | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 | E 去掉 PE | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 
@@ -1539,6 +1540,122 @@ c 是链末端，前面有 3 步累积的 subtle distribution shift，即使 r i
 - 新：`config/train_cr_multitask_full_v2.py`
 - ckpt 产物（不入 git）：`data/chickens_rabbits_multitask_full_v2/`, `out-cr-multitask-full-v2/ckpt.pt`（5000 iter，val_loss=0.2441，best 在 iter 3250）
 - commit `59f1d05` ✅ 2026-07-01 晚（exp(signal): S5.i fmt_N v2 4x depth — 3/4 subskills unlock, c cascade breaks (v5.1 → v5.2)）
+
+### 5.13 · S5.j fmt_L loss-mask SFT：v5.2 direct falsification test → v5.3（2026-07-02 下午）
+
+> **动机**：§5.12 v5.2 声称 "context alignment 是 c 的 fix，loss_mask 是最后一片拼图"。这次 direct 测——用 fmt_D 主任务原样文本，配合 companion `*_mask.bin` 让 train.py 只在 answer 位置算 loss。如果 v5.2 对，c per-step 应从 21% 跳到 60%+，OOD em 到 40-60%。
+
+#### 关键工程发现：`ignore_index=-1` 已内置
+
+**model.py 完全不用改!** pytorch `F.cross_entropy(logits, targets, ignore_index=-1)` 原生 skip 所有 target = -1 的位置——不算 loss、不算平均分母。nanoGPT 的 model.py 早已用这个。
+
+**所以工程改动 minimal**：
+- `train.py get_batch`：加载 `*_mask.bin`（如存在），`y = where(mask==1, y, -1)`
+- model.py / estimate_loss / eval：**一个字都不改**
+
+这是 SFT loss mask 最优雅的实现——backward-compat 100%（无 mask 文件时行为跟原来一样）。
+
+**实验设置**
+- 数据：`data/chickens_rabbits_lossmask/`（fmt_L：fmt_D text + `*_mask.bin`，prompt 32.4% mask=0，answer 67.6% mask=1）
+- 模型：0.79M（baseline）
+- 训练：5000 iter，其他一致
+- 唯一变量：loss 只算 answer tokens
+
+**代码改动**
+- `prepare.py`：加 `fmt_L_with_mask()` + `build_split_lossmask()` + main() fmt_L 分支写 `train_mask.bin` / `val_mask.bin` / `val_ood_mask.bin`（3 splits 都有 mask，让 train/val loss 可比）
+- `train.py get_batch`：**唯一修改**——loads mask if exists，`y = torch.where(mask.bool(), y, torch.full_like(y, -1))`
+- `eval_cr.py`：加 fmt_L 到所有 fmt_D branch（PARSERS / build_prompt / step_keys / gt_str）——因为 fmt_L 主任务文本跟 fmt_D 完全一样，parser 复用
+- `config/train_cr_lossmask.py`：baseline 0.79M
+
+**预测三件套**（base rate: neutral-to-bull，我以为 v5.2 对）
+
+| 情形 | OOD em | c per-step |
+|---|---:|---:|
+| Bull（v5.2 加固） | > 40% | > 60% |
+| 中性 | 20-40% | 40-60% |
+| Bear（v5.2 部分证伪） | < 20% | < 30% |
+
+**实测（n=200/split，贪心）**
+
+| split | em | digit | parse_fail | 2H | D | r | c |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| val_iid | 100.0% | 100.0% | 0.0% | 100.0% | 100.0% | 100.0% | 100.0% |
+| val_ood | **4.5%** | 82.8% | 0.0% | **9.5%** | 10.0% | 10.0% | **17.5%** |
+
+train_loss（只算 answer）= 0.094（vs fmt_D 全 token 的 0.22）。**loss 掉一半以上——证明 mask 机制正确应用**。
+
+**关键 finding：Bear case 命中，v5.2 部分证伪**
+
+对比三家:
+
+| 指标 | fmt_D | fmt_N v2 | **fmt_L** | 判词 |
+|---|---:|---:|---:|---|
+| OOD em | 3.5% | **17.0%** | **4.5%** | fmt_L 反跌 12.5pp vs fmt_N v2! |
+| OOD 2H | 2.5% | 74.5% | **9.5%** | fmt_L 远不如 fmt_N v2 |
+| OOD c per-step | 11.0% | 21.0% | **17.5%** | fmt_L 甚至比 fmt_N v2 更低 |
+
+**fmt_L 几乎跟 fmt_D 一样，没有任何 OOD unlock**。v5.2 的 "loss_mask 是 c fix" 假设**明显错误**。
+
+**根因分析：v5.2 推理里的盲点**
+
+我事前推理：*"loss_mask 让 c 在主任务真实 context 下学，消除 aux/main context 差异"*。看似对，但漏了一个关键点：
+
+- **fmt_L 训练时看到的所有数据都是 fmt_D 主任务样本**（100k，228 unique combos，**H 全在 [2, 20]**）
+- **c 位置从来没在 H ≥ 21 的情境下被训练过**
+- loss_mask 改变了梯度分布（只集中在 answer），**没改变数据分布**
+
+**对比 fmt_N v2**：
+- 每 aux 50k 独立样本，H 范围 **[2, 50]**（覆盖到 OOD）
+- 模型在 aux 里见过 H=37 的 subskill emit → transfer 到主任务时 OOD 上能勉强正确
+
+**fmt_L 缺的不是 context alignment，是 OOD subskill 曝光**。
+
+**v5.2 → v5.3 refinement**
+
+- **v5.0 (§5.10)**: "compositional coverage 是关键"
+- **v5.1 (§5.11)**: "coverage + depth 双必要"
+- **v5.2 (§5.12)**: "coverage + depth + context alignment 三必要"（推断:loss_mask 是 fix）
+- **v5.3 (本次)**: **"loss_mask alone 不 fix 任何 OOD subskill transfer。要 fix 需要 aux 同时满足 (a) 曝光 OOD H 值 + (b) 用主任务完整 context"**
+
+|  | (a) OOD subskill 曝光 | (b) 完整主任务 context | 效果 |
+|---|:-:|:-:|---|
+| fmt_D | ✗ | ✓（就是主任务） | baseline, subskill 全 broken |
+| **fmt_N v2** | ✓ (aux H∈[2,50]) | ✗ (aux 用简化 context) | **3/4 subskill unlock 到 74%，c 卡在 21%** |
+| **fmt_L** | ✗ (主任务 H∈[2,20]) | ✓ (fmt_D 完整 context) | **全部卡在 10-17%，跟 fmt_D 差不多** |
+| **fmt_O** (未做) | ✓ | ✓ | **v5.3 预测:全部 subskill 都 unlock 到 74%+** |
+
+**loss_mask 的真正价值 = 工程通用技巧,不是 OOD fix**
+
+loss_mask 本身**work**（train_loss 从 0.22 掉到 0.094 证明），只是它 fix 的问题**跟 OOD extrapolation 无关**：
+- ✓ 让训练 loss 更集中在"要学的部分"（answer），不浪费在"没法学的部分"（prompt 随机 H/F）
+- ✓ instruction tuning 时避免模型学"重复 question"，只学"生成 response"
+- ✗ 单独不引入 OOD 数据分布 → 不改 OOD 行为
+
+**深层 LLM 启示 refinement**
+
+之前 §5.10-5.12 说 "GPT-4 靠 training data mix"。v5.3 精细化：
+
+> GPT-4 训练数据里的"subskill 样本" **天然嵌入在完整 human text 的上下文中** —— 不是"实验室简化 aux"。**fmt_M/N 用简化 aux 是我们人工 shortcut**，与 GPT-4 训练数据的组织方式不同。真正类比 GPT-4 的应该是 fmt_O：aux 保留完整主任务 prefix。
+
+**loss_mask 的正面价值(不是负 finding)**
+
+- **工程机制 100% 验证**：train_loss 从 0.22 → 0.094 精确命中 SFT 预期
+- **instruction tuning 核心技巧的 hands-on**：GPT-4 SFT / Claude Alignment / Llama Chat 全用同样机制
+- 现在你能自己写 SFT loss mask，跟真实 industrial LLM finetune 完全同构
+
+**下一步候选**
+
+- **fmt_O = fmt_N + 完整主任务 prefix aux**：v5.3 的 direct falsification test。工程量大（每 aux 都要保留主任务前置 tokens 但只 supervise 目标 subskill 位置）
+- **接受 v5.3，收工**：v3 → v5.3 迭代已达到教学 payoff plateau
+- **换 task 到纯加法**：sanity check 论文 baseline 是否复现
+
+**新增产物**
+- 改：`data/chickens_rabbits/prepare.py` 加 fmt_L + `fmt_L_with_mask` + `build_split_lossmask` + main() 写 `*_mask.bin`
+- 改：`train.py get_batch` 加载 mask, `y = where(mask==1, y, -1)`
+- 改：`eval_cr.py` 加 fmt_L 到所有 fmt_D branch
+- 新：`config/train_cr_lossmask.py`
+- 数据 / ckpt 产物（不入 git）：`data/chickens_rabbits_lossmask/{train,val,val_ood}{.bin,_mask.bin}`, `out-cr-lossmask/ckpt.pt`（5000 iter，val_loss=0.0933）
+- commit `_HASH_TODO_`（见 §8）
 
 ---
 

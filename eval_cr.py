@@ -61,11 +61,10 @@ def _unrev_int(s: str) -> int:
 
 
 def build_prompt(H: int, F: int, fmt: str = "A") -> str:
-    """Format-aware prompt builder. fmt_C/D/M/N all use reversed-padded H and F
-    (their training data is reversed at the prompt level too). fmt_M's main
-    task IS fmt_D, and fmt_N's main task is also fmt_D — the aux tasks only
-    appear in train, never in val/val_ood."""
-    if fmt in ("C", "D", "M", "N"):
+    """Format-aware prompt builder. fmt_C/D/M/N/L all use reversed-padded
+    H and F. fmt_L's text is identical to fmt_D (loss mask only affects
+    the training loss, not the tokenization or prompt structure)."""
+    if fmt in ("C", "D", "M", "N", "L"):
         return f"H={_rev_pad(H)} F={_rev_pad(F)}\n"
     return f"H={H} F={F}\n"
 
@@ -134,11 +133,11 @@ def parse_fmt_D(first_line: str):
     return out
 
 
-# fmt_M and fmt_N's main tasks both use the same reversed-CoT structure as
-# fmt_D, so their parser is identical to parse_fmt_D. Aux samples never
-# appear in val/val_ood (main-task-only by design), so no separate parser.
+# fmt_M/N/L all share fmt_D's on-disk text format for the main task, so
+# their parser is identical to parse_fmt_D. Aux samples (M/N) and mask
+# metadata (L) never appear in val/val_ood — main-task-only by design.
 PARSERS = {"A": parse_fmt_A, "B": parse_fmt_B, "C": parse_fmt_C, "D": parse_fmt_D,
-           "M": parse_fmt_D, "N": parse_fmt_D}
+           "M": parse_fmt_D, "N": parse_fmt_D, "L": parse_fmt_D}
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +277,7 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     digit_total = 0
     digit_correct = 0
 
-    step_keys = ["two_h", "D", "r", "c"] if fmt in ("B", "D", "M", "N") else ["c", "r"]
+    step_keys = ["two_h", "D", "r", "c"] if fmt in ("B", "D", "M", "N", "L") else ["c", "r"]
     step_correct = {k: 0 for k in step_keys}
 
     samples_shown = 0
@@ -305,7 +304,7 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
             em += 1
 
         # per-step accuracy (each step judged independently)
-        if fmt in ("B", "D", "M", "N"):
+        if fmt in ("B", "D", "M", "N", "L"):
             if result.get("two_h") == 2 * H:    step_correct["two_h"] += 1
             if result.get("D") == F - 2 * H:    step_correct["D"] += 1
             if result.get("r") == r_gt:         step_correct["r"] += 1
@@ -315,15 +314,15 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
             if r_pred == r_gt: step_correct["r"] += 1
 
         # digit accuracy: char-by-char compare predicted answer to GT answer.
-        # fmt_C/D/M/N GTs are reversed-padded strings — the actual on-disk form.
-        # fmt_M/N main tasks share fmt_D's GT string layout.
+        # fmt_C/D/M/N/L GTs are reversed-padded strings — the actual on-disk form.
+        # fmt_M/N/L main tasks all share fmt_D's GT string layout.
         if fmt == "A":
             gt_str = f"c={c_gt} r={r_gt}"
         elif fmt == "B":
             gt_str = f"2H={2*H} D={F-2*H} r={r_gt} c={c_gt}"
         elif fmt == "C":
             gt_str = f"c={_rev_pad(c_gt)} r={_rev_pad(r_gt)}"
-        else:  # fmt == "D", "M", or "N"
+        else:  # fmt == "D", "M", "N", or "L"
             gt_str = (f"2H={_rev_pad(2*H)} D={_rev_pad(F-2*H)} "
                       f"r={_rev_pad(r_gt)} c={_rev_pad(c_gt)}")
         for a, b in zip(first_line.ljust(len(gt_str)), gt_str):

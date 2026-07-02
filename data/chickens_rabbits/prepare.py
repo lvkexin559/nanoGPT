@@ -43,6 +43,17 @@ Six prompt formats are supported (set via --format):
                        isolation and each covering the OOD H range. If v5
                        is right ("training signal + compositional coverage"),
                        main-task OOD em should jump to 60-80%.
+  L  loss-masked SFT:  Text on disk is identical to fmt_D. But a companion
+                       *_mask.bin file marks each position as prompt (0) or
+                       answer (1). train.py loads this mask and sets y=-1 at
+                       mask=0 positions, so cross_entropy(ignore_index=-1)
+                       supervises ONLY answer tokens. This is the SFT-style
+                       loss-mask trick: model sees full context every batch
+                       but only gets gradient signal on the answer portion.
+                       (S5.j) v5.2 direct falsification test: same subskill
+                       exposure as fmt_D main task but each subskill sees
+                       the FULL main-task context during training — should
+                       fix the c cascade transfer failure of fmt_N v2.
 
 Three splits are produced:
   train.bin       train samples (H in [2, 20], allows duplicates)
@@ -59,6 +70,7 @@ Usage:
     python data/chickens_rabbits/prepare.py --format D --out-dir data/chickens_rabbits_revcot/
     python data/chickens_rabbits/prepare.py --format M --out-dir data/chickens_rabbits_multitask/
     python data/chickens_rabbits/prepare.py --format N --out-dir data/chickens_rabbits_multitask_full/
+    python data/chickens_rabbits/prepare.py --format L --out-dir data/chickens_rabbits_lossmask/
 """
 import argparse
 import os
@@ -178,6 +190,28 @@ def fmt_sub_Hr(H: int, c: int) -> str:
     return f"H={rev_pad(H)} r={rev_pad(r)}\nc={rev_pad(c)}\n"
 
 
+def fmt_L_with_mask(H: int, F: int, c: int, r: int):
+    """fmt_L: text identical to fmt_D, plus a per-char mask marking
+    prompt (0) vs answer (1). Consumed by train.py get_batch, which sets
+    y=-1 at mask=0 positions so cross_entropy(ignore_index=-1) skips them.
+    Semantically: train the same fmt_D data but only compute loss on the
+    answer portion (SFT-style loss masking).
+
+    Returns (text, mask_list) both of same length. char-level tokenizer +
+    ordering guarantees `mask[i]` corresponds to `encode(text)[i]`.
+
+    Example (H=8, F=22, c=3, r=5):
+      text = "H=800 F=220\\n2H=610 D=600 r=300 c=500\\n"  (38 chars)
+      mask = [0]*12 + [1]*26                              (12 prompt + 26 answer)
+    """
+    prompt = f"H={rev_pad(H)} F={rev_pad(F)}\n"
+    answer = (f"2H={rev_pad(2*H)} D={rev_pad(F - 2*H)} "
+              f"r={rev_pad(r)} c={rev_pad(c)}\n")
+    text = prompt + answer
+    mask = [0] * len(prompt) + [1] * len(answer)
+    return text, mask
+
+
 FORMATTERS = {"A": fmt_A, "B": fmt_B, "C": fmt_C, "D": fmt_D}
 
 
@@ -215,6 +249,31 @@ def build_split_multitask(n: int, h_min_main: int, h_max_main: int,
     print(f"  [fmt_M] main={n_main} ({100*n_main/n:.1f}%)  "
           f"aux_mul2={n_aux} ({100*n_aux/n:.1f}%)")
     return "".join(chunks)
+
+
+def build_split_lossmask(n: int, h_min: int, h_max: int, seed: int):
+    """fmt_L split generator: builds text stream + parallel per-char mask.
+    Returns (text_str, mask_list) with len(text) == len(mask) guaranteed."""
+    rng = random.Random(seed)
+    text_parts = []
+    mask_parts = []
+    n_prompt_tok = 0
+    n_answer_tok = 0
+    for _ in range(n):
+        H, F, c, r = gen_sample(h_min, h_max, rng)
+        text, mask = fmt_L_with_mask(H, F, c, r)
+        text_parts.append(text)
+        mask_parts.append(mask)
+        n_prompt_tok += mask.count(0)
+        n_answer_tok += mask.count(1)
+    full_text = "".join(text_parts)
+    full_mask = [m for chunk in mask_parts for m in chunk]
+    assert len(full_text) == len(full_mask), \
+        f"[fmt_L] text/mask length mismatch: {len(full_text)} vs {len(full_mask)}"
+    total = n_prompt_tok + n_answer_tok
+    print(f"  [fmt_L] prompt_tokens={n_prompt_tok:,} ({100*n_prompt_tok/total:.1f}%)  "
+          f"answer_tokens={n_answer_tok:,} ({100*n_answer_tok/total:.1f}%)")
+    return full_text, full_mask
 
 
 def build_split_multitask_full(n: int, h_min_main: int, h_max_main: int,
@@ -283,9 +342,9 @@ def sanity_check(format_key: str, formatter) -> None:
                 f"formatter {format_key!r} emitted char {ch!r} not in vocab"
             )
 
-    # 5. fmt_C/D/M/N rev_pad must be perfectly invertible across our number
+    # 5. fmt_C/D/M/N/L rev_pad must be perfectly invertible across our number
     #    range, otherwise the eval parser will silently decode wrong integers
-    if format_key in ("C", "D", "M", "N"):
+    if format_key in ("C", "D", "M", "N", "L"):
         for n in [0, 1, 5, 8, 10, 16, 22, 40, 50, 100, 168, 200]:
             padded_rev = rev_pad(n)
             decoded = int(padded_rev[::-1])
@@ -307,6 +366,35 @@ def sanity_check(format_key: str, formatter) -> None:
                     raise AssertionError(
                         f"fmt_mul2({h}) emitted char {ch!r} not in vocab"
                     )
+
+    # 6b. fmt_L-specific: verify text/mask length invariant and mask semantics
+    if format_key == "L":
+        rng_probe = random.Random(123)
+        for _ in range(20):
+            H, F, c, r = gen_sample(2, 50, rng_probe)
+            text, mask = fmt_L_with_mask(H, F, c, r)
+            if len(text) != len(mask):
+                raise AssertionError(
+                    f"fmt_L text/mask length mismatch at (H={H},c={c}): "
+                    f"{len(text)} vs {len(mask)}"
+                )
+            # First "\n" separates prompt from answer; mask should be 0 up to
+            # and including that newline, and 1 after.
+            nl = text.index("\n")
+            for i in range(nl + 1):
+                if mask[i] != 0:
+                    raise AssertionError(
+                        f"fmt_L prompt token at pos {i} has mask={mask[i]} (want 0)"
+                    )
+            for i in range(nl + 1, len(mask)):
+                if mask[i] != 1:
+                    raise AssertionError(
+                        f"fmt_L answer token at pos {i} has mask={mask[i]} (want 1)"
+                    )
+            # Also verify vocab coverage
+            for ch in text:
+                if ch not in stoi:
+                    raise AssertionError(f"fmt_L emitted char {ch!r} not in vocab")
 
     # 7. fmt_N-specific: the 3 additional aux formatters produce legal
     #    (H, F, D, r, c) and stay in vocab. Also confirms the derived
@@ -335,15 +423,9 @@ def sanity_check(format_key: str, formatter) -> None:
 def report_unique_combos(text: str, formatter_key: str) -> None:
     """Eyeball how many *unique* (H,F,c,r) tuples landed in this split, so we
     notice when 100k samples collapse to a tiny set of repeats.
-    For fmt_C/D/M/N we reverse-decode the (H,F) string back to its real value,
-    so the count reflects unique *real* combinations, not reversed strings.
-    For fmt_M/N, aux lines without a full "H=X F=Y" pattern are silently
-    skipped (caught by the ValueError branch below); the count reports only
-    main-task (H,F) combos, which is what we care about.
-    Note fmt_N has multiple aux formatters; only main + fmt_sub_F2H aux
-    happen to contain " F=" - the latter is 12.5% of samples and legitimately
-    has H beyond h_max_train, which is fine (aux is designed to cover OOD).
-    So this metric slightly overcounts for fmt_N; that's acceptable."""
+    For fmt_C/D/M/N/L we reverse-decode the (H,F) string back to its real
+    value, so the count reflects unique *real* combinations, not reversed
+    strings. fmt_L's text is identical to fmt_D's, so decoding is the same."""
     seen = set()
     for line in text.split("\n"):
         if not line.startswith("H="):
@@ -351,7 +433,7 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
         try:
             head, tail = line.split(" F=")
             H_str, F_str = head[2:], tail
-            if formatter_key in ("C", "D", "M", "N"):
+            if formatter_key in ("C", "D", "M", "N", "L"):
                 H = int(H_str[::-1])
                 F = int(F_str[::-1])
             else:
@@ -365,10 +447,11 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N"], default="A",
+    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N", "L"], default="A",
                         help="prompt format: A=direct, B=CoT, C=reversed, D=rev+CoT, "
                              "M=multi-task mix (fmt_D main + fmt_mul2 aux), "
-                             "N=multi-task full (fmt_D main + all 4 subskill auxes)")
+                             "N=multi-task full (fmt_D main + all 4 subskill auxes), "
+                             "L=loss-masked fmt_D (SFT-style, writes *_mask.bin)")
     parser.add_argument("--n-train", type=int, default=100_000)
     parser.add_argument("--n-val", type=int, default=1_000)
     parser.add_argument("--n-val-ood", type=int, default=1_000)
@@ -394,9 +477,11 @@ def main():
             f"h_min_ood={args.h_min_ood} <= h_max_train={args.h_max_train}"
         )
 
-    # fmt_M/N share fmt_D as the main-task formatter (used for val/val_ood).
-    # For sanity_check we probe with fmt_D since aux is (H,) or (H,c).
-    formatter = fmt_D if args.format in ("M", "N") else FORMATTERS[args.format]
+    # fmt_M/N/L share fmt_D as the main-task formatter (used for val/val_ood).
+    # For sanity_check we probe with fmt_D since fmt_L returns (text, mask)
+    # tuple which doesn't match the single-return formatter signature; fmt_D
+    # covers the vocab-coverage test just as well.
+    formatter = fmt_D if args.format in ("M", "N", "L") else FORMATTERS[args.format]
     out_dir = (
         os.path.abspath(args.out_dir)
         if args.out_dir is not None
@@ -414,6 +499,9 @@ def main():
         print(f"[gen] fmt_N: main task H in [2, {args.h_max_train}], "
               f"4 aux subskills H in [2, {args.h_max_aux}], "
               f"50% main + 12.5% each aux in train only")
+    elif args.format == "L":
+        print(f"[gen] fmt_L: fmt_D text + companion *_mask.bin "
+              f"(prompt=0, answer=1). train.py masks loss via ignore_index=-1.")
 
     splits = {
         "train":   (args.n_train,   2,                  args.h_max_train, args.seed),
@@ -423,6 +511,7 @@ def main():
 
     meta_sizes = {}
     for name, (n, h_lo, h_hi, seed) in splits.items():
+        mask_list = None  # fmt_L writes companion _mask.bin; others don't
         if args.format == "M" and name == "train":
             # fmt_M train mixes fmt_D main task (H in [h_lo,h_hi]) with
             # fmt_mul2 aux task (H in [2, h_max_aux]). val/val_ood stay
@@ -433,6 +522,11 @@ def main():
             # tasks (each supervising one CoT step). val/val_ood remain
             # main-task-only so we always evaluate main-task performance.
             text = build_split_multitask_full(n, h_lo, h_hi, 2, args.h_max_aux, seed)
+        elif args.format == "L":
+            # fmt_L: fmt_D text + per-char mask (prompt=0, answer=1).
+            # All 3 splits get masks so train_loss/val_loss are comparable
+            # (both computed only on answer tokens).
+            text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
         else:
             text = build_split(n, h_lo, h_hi, formatter, seed)
         ids = encode(text)
@@ -441,6 +535,18 @@ def main():
         arr.tofile(out_path)
         print(f"[gen] {name}: n={n:>6}  H in [{h_lo},{h_hi}]  "
               f"tokens={len(arr):>9,}  -> {os.path.basename(out_path)}")
+        # Write companion mask file for fmt_L. train.py auto-detects it.
+        if mask_list is not None:
+            if len(mask_list) != len(arr):
+                raise AssertionError(
+                    f"[fmt_L] tokens/mask count mismatch for split {name}: "
+                    f"{len(arr)} tokens vs {len(mask_list)} mask values"
+                )
+            mask_arr = np.array(mask_list, dtype=np.uint8)
+            mask_path = os.path.join(out_dir, f"{name}_mask.bin")
+            mask_arr.tofile(mask_path)
+            print(f"       mask: supervised_frac={mask_arr.mean():.3f}  "
+                  f"-> {os.path.basename(mask_path)}")
         report_unique_combos(text, args.format)
         meta_sizes[name] = {"n_samples": n, "n_tokens": int(len(arr)),
                             "h_range": [h_lo, h_hi]}
@@ -457,11 +563,12 @@ def main():
     # not " F=" — so it's skipped by the " F=" filter below. And aux
     # "F=X 2H=Y\n" (sub_F2H) doesn't start with "H=", also skipped.
     # Only true main-task lines "H=X F=Y" reach the H-check.
+    # fmt_L text is identical to fmt_D (no auxes), so filter also works.
     for line in train_text.split("\n"):
         if line.startswith("H=") and " F=" in line:
             try:
                 H_str = line.split(" F=")[0][2:]
-                H = int(H_str[::-1]) if args.format in ("C", "D", "M", "N") else int(H_str)
+                H = int(H_str[::-1]) if args.format in ("C", "D", "M", "N", "L") else int(H_str)
                 if H > args.h_max_train:
                     leaked += 1
             except (ValueError, IndexError):

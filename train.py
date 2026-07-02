@@ -118,11 +118,26 @@ def get_batch(split):
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        mask_path = os.path.join(data_dir, 'train_mask.bin')
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+        mask_path = os.path.join(data_dir, 'val_mask.bin')
+    # If a companion *_mask.bin exists (fmt_L / loss-masked dataset), load it too
+    # and set y = -1 at mask=0 positions so cross_entropy(ignore_index=-1) skips
+    # those tokens in the loss. Perfectly backward-compatible: without mask file,
+    # behavior identical to vanilla nanoGPT.
+    mask_data = np.memmap(mask_path, dtype=np.uint8, mode='r') if os.path.exists(mask_path) else None
     ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+    if mask_data is not None:
+        # mask[t] tells us whether position t in the stream is supervised.
+        # y[t] is the target for predicting the token at stream position t+1
+        # (i.e. we predict the NEXT token given tokens up to t). So we should
+        # set y[t] = -1 iff the target position (t+1) is not supervised, i.e.
+        # mask_data[i + 1 + t] == 0. Aligning with y's [i+1:i+1+block_size].
+        mask = torch.stack([torch.from_numpy((mask_data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+        y = torch.where(mask.bool(), y, torch.full_like(y, -1))
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)

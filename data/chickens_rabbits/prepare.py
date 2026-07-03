@@ -153,18 +153,27 @@ def fmt_B(H: int, F: int, c: int, r: int) -> str:
     return f"H={H} F={F}\n2H={2*H} D={F - 2*H} r={r} c={c}\n"
 
 
-REV_WIDTH = 3  # zero-pad width before reversing; covers H<=50, F<=200
+REV_WIDTH = 3  # module-level default; main() can override via --rev-width to 4
+               # (width 3 covers H<=50 F<=200; width 4 covers H<=500 F<=2000, etc.)
 
 
-def rev_pad(n: int, width: int = REV_WIDTH) -> str:
+def rev_pad(n: int, width: int | None = None) -> str:
     """Zero-pad to fixed width then reverse char by char.
+    If width is None, dynamically read the module-level REV_WIDTH — this
+    lets main() override REV_WIDTH once and every downstream formatter
+    picks it up without threading a width kwarg through every function.
     Examples (width=3):
         8   -> '008' -> '800'
         16  -> '016' -> '610'
         100 -> '100' -> '001'
+    Examples (width=4):
+        8    -> '0008' -> '8000'
+        500  -> '0500' -> '0050'
+        2000 -> '2000' -> '0002'
     Fixed width keeps the generated answer a constant number of tokens, which
     is one of the reasons reversal works in practice (« Teaching Arithmetic »)."""
-    return str(n).zfill(width)[::-1]
+    w = REV_WIDTH if width is None else width
+    return str(n).zfill(w)[::-1]
 
 
 def fmt_C(H: int, F: int, c: int, r: int) -> str:
@@ -684,21 +693,33 @@ def main():
     parser.add_argument("--n-train", type=int, default=100_000)
     parser.add_argument("--n-val", type=int, default=1_000)
     parser.add_argument("--n-val-ood", type=int, default=1_000)
+    parser.add_argument("--h-min-train", type=int, default=2,
+                        help="lower bound of H for train + val_iid. Default 2.")
     parser.add_argument("--h-max-train", type=int, default=20,
                         help="upper bound of H for train + val_iid")
     parser.add_argument("--h-min-ood", type=int, default=21,
                         help="lower bound of H for val_ood (must be > h-max-train)")
     parser.add_argument("--h-max-ood", type=int, default=50)
+    parser.add_argument("--h-min-aux", type=int, default=2,
+                        help="fmt_M/N/O/P: lower bound of H for aux tasks. Default 2.")
     parser.add_argument("--h-max-aux", type=int, default=50,
-                        help="fmt_M/N: upper bound of H for auxiliary tasks. Should cover "
+                        help="fmt_M/N/O/P: upper bound of H for auxiliary tasks. Should cover "
                              "the main task's OOD range so the model sees big-H subskills "
                              "in the aux stream. Default 50.")
+    parser.add_argument("--rev-width", type=int, default=3,
+                        help="Zero-pad width for reversed digits (fmt_C/D/M/N/L/O/P). "
+                             "3 covers numbers up to 999; use 4 for up to 9999. Only "
+                             "matters for fmt_C onwards. Default 3.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", default=None,
                         help="output dir for {train,val,val_ood}.bin + meta.pkl. "
                              "Default: this file's own directory. Pass a fresh path "
                              "(e.g. data/chickens_rabbits_h40/) to keep prior runs.")
     args = parser.parse_args()
+
+    # Override module-level REV_WIDTH so all downstream rev_pad calls pick it up
+    global REV_WIDTH
+    REV_WIDTH = args.rev_width
 
     if args.h_min_ood <= args.h_max_train:
         raise SystemExit(
@@ -722,28 +743,29 @@ def main():
 
     print(f"[gen] format={args.format}  vocab_size={VOCAB_SIZE}  vocab={VOCAB_CHARS!r}")
     if args.format == "M":
-        print(f"[gen] fmt_M: main task H in [2, {args.h_max_train}], "
-              f"aux mul2 H in [2, {args.h_max_aux}], 50/50 mix in train only")
+        print(f"[gen] fmt_M: main task H in [{args.h_min_train}, {args.h_max_train}], "
+              f"aux mul2 H in [{args.h_min_aux}, {args.h_max_aux}], 50/50 mix in train only")
     elif args.format == "N":
-        print(f"[gen] fmt_N: main task H in [2, {args.h_max_train}], "
-              f"4 aux subskills H in [2, {args.h_max_aux}], "
+        print(f"[gen] fmt_N: main task H in [{args.h_min_train}, {args.h_max_train}], "
+              f"4 aux subskills H in [{args.h_min_aux}, {args.h_max_aux}], "
               f"50% main + 12.5% each aux in train only")
     elif args.format == "L":
         print(f"[gen] fmt_L: fmt_D text + companion *_mask.bin "
               f"(prompt=0, answer=1). train.py masks loss via ignore_index=-1.")
     elif args.format == "O":
         print(f"[gen] fmt_O: fmt_D text with subskill-specific masks (v5.3 test)")
-        print(f"      main H in [2, {args.h_max_train}], "
-              f"aux H in [2, {args.h_max_aux}]; "
+        print(f"      main H in [{args.h_min_train}, {args.h_max_train}], "
+              f"aux H in [{args.h_min_aux}, {args.h_max_aux}]; "
               f"50% main + 12.5% each of 4 subskill auxes")
     elif args.format == "P":
         print(f"[gen] fmt_P: fmt_O text mix + full-answer mask (S5.l mask-role test)")
-        print(f"      main H in [2, {args.h_max_train}], "
-              f"aux H in [2, {args.h_max_aux}] (aux degenerates into wider-H main)")
+        print(f"      main H in [{args.h_min_train}, {args.h_max_train}], "
+              f"aux H in [{args.h_min_aux}, {args.h_max_aux}] (aux degenerates into wider-H main)")
+    print(f"      rev_width={args.rev_width}")
 
     splits = {
-        "train":   (args.n_train,   2,                  args.h_max_train, args.seed),
-        "val":     (args.n_val,     2,                  args.h_max_train, args.seed + 1),
+        "train":   (args.n_train,   args.h_min_train,   args.h_max_train, args.seed),
+        "val":     (args.n_val,     args.h_min_train,   args.h_max_train, args.seed + 1),
         "val_ood": (args.n_val_ood, args.h_min_ood,     args.h_max_ood,   args.seed + 2),
     }
 
@@ -752,14 +774,14 @@ def main():
         mask_list = None  # fmt_L writes companion _mask.bin; others don't
         if args.format == "M" and name == "train":
             # fmt_M train mixes fmt_D main task (H in [h_lo,h_hi]) with
-            # fmt_mul2 aux task (H in [2, h_max_aux]). val/val_ood stay
-            # main-task-only so we always evaluate main-task performance.
-            text = build_split_multitask(n, h_lo, h_hi, 2, args.h_max_aux, seed)
+            # fmt_mul2 aux task (H in [h_min_aux, h_max_aux]). val/val_ood
+            # stay main-task-only so we always evaluate main-task performance.
+            text = build_split_multitask(n, h_lo, h_hi, args.h_min_aux, args.h_max_aux, seed)
         elif args.format == "N" and name == "train":
             # fmt_N train mixes fmt_D main task with all 4 subskill aux
             # tasks (each supervising one CoT step). val/val_ood remain
             # main-task-only so we always evaluate main-task performance.
-            text = build_split_multitask_full(n, h_lo, h_hi, 2, args.h_max_aux, seed)
+            text = build_split_multitask_full(n, h_lo, h_hi, args.h_min_aux, args.h_max_aux, seed)
         elif args.format == "L":
             # fmt_L: fmt_D text + per-char mask (prompt=0, answer=1).
             # All 3 splits get masks so train_loss/val_loss are comparable
@@ -769,7 +791,7 @@ def main():
             if name == "train":
                 # fmt_O train: 50% main + 12.5% each of 4 context-aligned auxes
                 text, mask_list = build_split_lossmask_context_aligned(
-                    n, h_lo, h_hi, 2, args.h_max_aux, seed)
+                    n, h_lo, h_hi, args.h_min_aux, args.h_max_aux, seed)
             else:
                 # fmt_O val / val_ood: main-task only with prompt/answer mask.
                 # Same content as fmt_L val split; used to compute masked val
@@ -779,7 +801,7 @@ def main():
             if name == "train":
                 # fmt_P train: same text mix as fmt_O but full-answer mask.
                 text, mask_list = build_split_full_answer_mask(
-                    n, h_lo, h_hi, 2, args.h_max_aux, seed)
+                    n, h_lo, h_hi, args.h_min_aux, args.h_max_aux, seed)
             else:
                 text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
         else:
@@ -858,9 +880,13 @@ def main():
         "stoi": stoi,
         "itos": itos,
         "format": args.format,
+        "h_min_train": args.h_min_train,
         "h_max_train": args.h_max_train,
         "h_min_ood": args.h_min_ood,
         "h_max_ood": args.h_max_ood,
+        "h_min_aux": args.h_min_aux,
+        "h_max_aux": args.h_max_aux,
+        "rev_width": args.rev_width,
         "splits": meta_sizes,
     }
     meta_path = os.path.join(out_dir, "meta.pkl")

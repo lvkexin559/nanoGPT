@@ -45,7 +45,15 @@ from model import GPTConfig, GPT  # noqa: E402
 # and the parsers.
 # ---------------------------------------------------------------------------
 
-_REV_WIDTH = 3  # must match prepare.py's REV_WIDTH for fmt_C
+_REV_WIDTH = 3  # module-level default; overridden by set_rev_width() when
+                # loading a meta.pkl with a rev_width key (backward-compat:
+                # older meta.pkl without rev_width silently keeps 3)
+
+
+def set_rev_width(w: int) -> None:
+    """Called after load_tokenizer to sync eval-side rev_width with prepare.py's."""
+    global _REV_WIDTH
+    _REV_WIDTH = w
 
 
 def _rev_pad(n: int, width: int = _REV_WIDTH) -> str:
@@ -396,10 +404,14 @@ def main():
 
     encode, decode, meta = load_tokenizer(meta_path)
     fmt = meta["format"]
-    print(f"[load] tokenizer loaded (vocab_size={meta['vocab_size']}, format={fmt})")
+    # Sync rev_width from meta (backward-compat: old meta without this key -> 3)
+    rev_width = meta.get("rev_width", 3)
+    set_rev_width(rev_width)
+    print(f"[load] tokenizer loaded (vocab_size={meta['vocab_size']}, format={fmt}, "
+          f"rev_width={rev_width})")
 
-    # Resolve H ranges: CLI override > meta defaults
-    iid_h_min = args.iid_h_min if args.iid_h_min is not None else 2
+    # Resolve H ranges: CLI override > meta > module default
+    iid_h_min = args.iid_h_min if args.iid_h_min is not None else meta.get("h_min_train", 2)
     iid_h_max = args.iid_h_max if args.iid_h_max is not None else meta["h_max_train"]
     ood_h_min = args.ood_h_min if args.ood_h_min is not None else meta["h_min_ood"]
     ood_h_max = args.ood_h_max if args.ood_h_max is not None else meta["h_max_ood"]

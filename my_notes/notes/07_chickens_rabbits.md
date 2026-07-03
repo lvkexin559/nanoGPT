@@ -416,6 +416,7 @@ python eval_cr.py --ckpt out-cr-cot/ckpt.pt --ood-h-min 51 --ood-h-max 100
 | **J fmt_L loss-mask SFT** (0.79M) | **100.0%** | **100.0%** | **4.5%** | **82.8%** | **v5.2 部分证伪 → v5.3**：loss_mask alone 不 fix（train_loss 0.22→0.094 证明 mask 机制 work，但 OOD em 从 fmt_N v2 的 17% 反跌到 4.5%）；根因是 **fmt_L 完全没引入 OOD subskill 曝光**——loss_mask 改梯度分布，不改数据分布；**v5.3：需要 aux 曝光 OOD H (a) + aux 用完整主任务 context (b) 两者组合**，见 §5.13 |
 | **K fmt_O context-aligned** (0.79M) | **100.0%** | **100.0%** | **100.0%** ★ | **100.0%** | 🎉 **v5.3 super-bull 命中 → v6 完整 recipe**！aux 用完整 fmt_D text (a)+(b) 双满足；每步 per-step 全 100%；从 fmt_D 的 3.5% 一跃到 100%，同 0.79M 参数不变。**证明 model capacity 从来不是 bottleneck,training signal 设计才是**，见 §5.14 |
 | **L fmt_P full-mask** (对照实验，0.79M) | 100.0% | 100.0% | **100.0%**([21,50]) / **1.5%**([51,100]) | 100.0%/77.0% | **v6→v6.1 双重发现**：fmt_P 全 mask 在 [21,50] 也拿 100%(仅靠 aux 扩训练分布)但 [51,100] 崩到 1.5%——证明**mask 机制 + aux H 范围决定"subskill lookup 边界"**；**fmt_O 在 [51,100] 也只 2.5%**——之前认为 fmt_O 学"算法" 是过度乐观，实际学的是"subskill 组合的 lookup"，仍受 aux H 范围硬性限制，见 §5.15 |
+| **M fmt_D/N/O × 0.79M/5M wide** (H_train=[5,100], rev_width=4, aux [2,200]) | **100.0%**（5M O）| **100.0%**（5M O）| **86.0%** NEAR / **4.0%** FAR | 22.9%/18.7% | 🎉 **v6.2 → v6.3 双 gate 定型**：5M 让 wide_O IID 从 23% 一跃到 100%（**capacity gate confirmed**），但 FAR [201,500] 仍 4%（**aux boundary gate 独立于 capacity**）；wide_O 5M 4 段完美体现 2×2 gate grid：(cap=ON,aux=ON)=100%（IID/BELOW）,(cap=ON,aux=ON [101,200]⊂[2,200])=86%,(cap=ON,aux=OFF)=4%（FAR）；v6.3 公式：**OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**，见 §5.16 |
 | D + loss masking | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 | E 去掉 PE | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 
@@ -1894,6 +1895,121 @@ compositional coverage: 每个 subskill 都单独教 ✓ (fmt_M/N/O 都有)
 - 新:`config/train_cr_full_mask.py`
 - 数据/ckpt:`data/chickens_rabbits_full_mask/`, `out-cr-full-mask/ckpt.pt`(val_loss=0.0984)
 - commit `b1a5707` ✅ 2026-07-03 上午（exp(mask-role): S5.l fmt_P + super-OOD test — v6 → v6.1 (still subskill lookup)）
+
+### 5.16 · S5.m 3-way × 2-scale wide 大对照：v6.2 → v6.3 "双 gate 模型"（2026-07-03 下午）
+
+> **动机**：v6.1 直接测过后（§5.15），用户 hunch 想扩到"训练 H=[5,100],测试 H=[2,500]"3-way (fmt_D vs N vs O) × 2-scale (0.79M vs 5M) 大对照。目标:
+> 1. 测 v6.1 "aux H 范围决定边界"在 5× 放大 H 分布下是否 hold
+> 2. 测 v6.2 "capacity 是 IID 上限" 假设(rev_width=4 让 task 复杂化)
+> 3. 三种 fmt 一次 side-by-side 对比
+
+**关键工程改动**（backward-compat）
+- `prepare.py`:加 `--h-min-train` / `--h-min-aux` / `--rev-width` 参数,存 `meta.pkl`；`rev_pad(n)` 动态读全局 `REV_WIDTH` 避免 default-value 陷阱
+- `eval_cr.py`:从 meta 读 `rev_width`(通过 `set_rev_width()`) + `h_min_train`,老 meta 无 key 时 fallback 3 / 2
+
+**Setup**
+- 主任务 H:[5, 100]（比 baseline [2, 20] 扩 5×）
+- Aux H(N/O 用):[2, 200]（覆盖 test [2,200] 但不覆盖 [201, 500]）
+- rev_width:**4**（覆盖数字到 9999,test H=500 时 F=2000/2H=1000/D=1000 都 4 位）
+- Test 4 段:IID [5,100] / BELOW [2,4] / NEAR [101,200] / FAR [201,500]
+- Scale:0.79M(4L/4H/128) + 5M(6L/8H/256)
+- 训练:5000 iter → 追加到 15-17k(0.79M)/ 20k(5M)—— val_loss 都 plateau
+
+#### 实测：12 组 0.79M vs 5M 对照
+
+| ckpt | 段 | 0.79M @15-17k | 5M @20k | Δ | 判断 |
+|---|---|---:|---:|---:|---|
+| wide_D | IID [5,100] | 30.5% | **86.5%** | +56pp | capacity gate 打开 |
+| wide_D | BELOW [2,4] | 7% | 24% | +17pp | 主任务未覆盖,微弱蒙对 |
+| wide_D | NEAR [101,200] | 0% | 4% | +4pp | 无 aux,capacity 帮不到外推 |
+| wide_D | FAR [201,500] | 0% | 0% | 0 | 全崩 |
+| wide_N | IID [5,100] | 28% | **81%** | +53pp | capacity gate 打开 |
+| wide_N | BELOW [2,4] | 100% | **100%** | 0 | aux 简化 context 100% work |
+| wide_N | NEAR [101,200] | 0% | 21% | +21pp | aux 简化 context transfer 差 |
+| wide_N | FAR [201,500] | 0% | 0% | 0 | aux 不覆盖 |
+| **wide_O** | **IID [5,100]** | 23% | **100%** | **+77pp** ★ | **capacity 打开 → 完美 IID** |
+| **wide_O** | **BELOW [2,4]** | 73.5% | **100%** | +26.5pp | aux 覆盖 + capacity |
+| **wide_O** | **NEAR [101,200]** | 38.5% | **86%** | +47.5pp ★ | aux 覆盖 + capacity |
+| **wide_O** | **FAR [201,500]** | 1% | 4% | +3pp | aux 不覆盖,capacity 无用 |
+
+**wide_O 5M 是 project 迄今最漂亮的结果** —— 4 段刚好完美体现 v6.3 双 gate 的 2×2 grid。
+
+#### 5 大 finding
+
+**Finding 1:v6.1 边界 claim 极干净 confirmed**
+
+wide_O 5M NEAR [101,200] em=86% vs FAR [201,500] em=4% —— **boundary 精确在 aux H max=200**。这跟 §5.15 fmt_O 在原 setup 上 [51,100] 崩到 2.5% 是同 pattern,只是这次 boundary 平移到 200（因为 aux 现在覆盖到 200）。**规律稳定,不依赖具体数值**。
+
+**Finding 2:capacity 是 IID 上限,但只是 IID**
+
+5M 让 fmt_D/N/O 三家 IID em 从 20-30% 跳到 80-100%（**capacity gate confirmed**），但:
+- wide_D FAR: 0% → 0%（capacity 单独没帮到外推）
+- wide_O FAR: 1% → 4%（capacity 让 baseline 蒙对率略升,仍是 noise floor）
+
+**capacity 和 aux 覆盖是完全独立的 gate**。
+
+**Finding 3:val_loss flat 但 em 大跳 —— 新 methodology insight**
+
+| ckpt | 0.79M val_loss | 5M val_loss | 0.79M IID em | 5M IID em |
+|---|---:|---:|---:|---:|
+| wide_D | 0.31 | 0.31 | 30.5% | 86.5% |
+| wide_O | 0.14 | 0.14 | 23% | **100%** |
+
+**val_loss 完全 flat 但 em 差 77pp**！之前判断 "val_loss flat → em flat" 是**错的**。在 subskill 层面的 discrete 精度上,val_loss 不是可靠 predictor。
+
+**Finding 4:fmt_D 5M NEAR 仍崩** —— capacity 单独无法救 OOD
+
+即使 IID 从 30% → 86.5%,fmt_D NEAR 只从 0% → 4%。**没 aux,capacity 单独无法外推**。这是 v6.3 双 gate 独立性最干净的 direct evidence。
+
+**Finding 5:fmt_N NEAR 21% vs fmt_O NEAR 86%** —— context alignment 在放大 scale 下仍关键
+
+同 5M capacity + 同 aux H=[2,200] 覆盖,唯一差别是 aux context:
+- fmt_N v2:aux 用简化 context ("H=X\n2H=Y\n")
+- fmt_O:aux 用完整 fmt_D 主任务 context
+
+wide_O NEAR 86% vs wide_N NEAR 21% —— **context alignment 贡献 65pp**。这跟 §5.14 fmt_O 100% vs fmt_N v2 17% 结构同构（差 83pp）,证明 context alignment 效应在 wide setup 下仍然极大。
+
+#### v6.2 → v6.3 formulation
+
+**v6.2 (§5.16 previous)**:"capacity 与 rev_width 交互,scale up 无用"—— 现在看是**错的**（因为当时 5000 iter 数据没收敛就下的结论）
+
+**v6.3(本次,基于 5M 数据）**:
+
+```
+OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
+
+其中:
+  capacity_gate                = f(model size, task complexity)
+                                 决定 "IID subskill 学没学完"
+  subskill_transfer_within_aux = boolean 
+                                 "test H ∈ aux 训练分布 range 内"
+```
+
+**乘积形式**:两 gate 独立,任一 fail 都会让 em 挂。**wide_O 5M 4 段刚好完美体现 2×2**:
+
+|  | aux 覆盖 ON | aux 覆盖 OFF |
+|---|---|---|
+| capacity ON | IID/BELOW/NEAR: 86-100% ★ | FAR: 4%（noise floor）|
+| capacity OFF | 0.79M NEAR: 38.5%（弱 unlock）| 0.79M FAR: 1% |
+
+#### 深层 LLM 启示 v6.3 版
+
+之前 §5.10-5.15 说 "GPT-4 靠 training data mix",v6.3 精细化成 **"双维度独立 gate"**:
+
+> - **Scale is not all you need**:0.79M 若 aux 对齐也能 unlock（fmt_O 原 setup 100%）
+> - **Data coverage is not all you need**:0.79M capacity 不足时 IID 只 30%（wide_O 0.79M IID 23%）
+> - **两者独立 gate,乘积决定 em**:GPT-4 的成功 = **极大 scale × 极广训练分布**,两个 axis 都拉满
+> - **单独扩一个 axis 只解决"半个问题"**:仅扩 scale 不改数据 → NEAR/FAR 全崩;仅改数据不扩 scale → IID 都学不透
+
+**"Scale × Coverage" 的乘积形式** 是 v6.3 最 refined 的 LLM 启示,也是 project 12 组实验积累出来的最深 finding。
+
+#### 新增产物
+
+- 改:`prepare.py` 加 `--h-min-train` / `--h-min-aux` / `--rev-width` + meta 存 + `rev_pad` 动态 REV_WIDTH
+- 改:`eval_cr.py` 从 meta 读 rev_width + h_min_train(向后兼容)
+- 新:6 个 config `train_cr_wide_[D/N/O]{,_5m_[D/N/O]}.py`
+- 数据/ckpt(不入 git):3 个 `data/chickens_rabbits_wide_*/` + 6 个 `out-cr-wide-*/ckpt.pt`
+- commit `_HASH_TODO_`
 
 ---
 

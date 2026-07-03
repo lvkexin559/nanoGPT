@@ -29,6 +29,7 @@
 - [x] **S5.h fmt_N 全 4 subskill**（2026-07-01 傍晚）✅ — **v5 direct falsification → v5.1 "coverage + depth 双必要"**；每 aux 12.5k 让 4 步 per-step 都涨到 18-22%（比 fmt_D 大幅提升但远低于 fmt_M 单 aux 50k 的 70%）；OOD em 15.5%（parse_fail 39.5% multi-task pattern confusion 新问题）；commit `1f611f6`
 - [x] **S5.i fmt_N v2 加 depth**（每 aux 50k，2026-07-01 晚）✅ — **v5.1 direct test → v5.2 "transfer 效率不均"**；2H/D/r per-step 都跳到 73-75% 完美验证 depth 假设、parse_fail 39.5→7.0%；**但 c 卡在 21%** cascade tail transfer 严重 broken；commit `59f1d05`
 - [x] **S5.j fmt_L loss-mask SFT**（2026-07-02 下午）✅ — **v5.2 direct falsification test → v5.3 refinement**；loss_mask 工程机制 100% work（train_loss 0.22→0.094），但 OOD em 4.5%（比 fmt_N v2 反跌 12.5pp）；根因是 **fmt_L 没引入 OOD subskill 曝光**——loss_mask 改梯度分布不改数据分布；**v5.3**：coverage + depth + (a) aux 曝光 OOD + (b) aux 用完整主任务 context **四个必要条件**；loss_mask 的真价值是 SFT / instruction tuning 通用工程技巧；commit `5bacd8f`
+- [x] 🎉 **S5.k fmt_O context-aligned**（2026-07-02 傍晚）✅ — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**；aux 用完整 fmt_D text，同时满足 (a)+(b)；**OOD em 100%，每步 per-step 100%**（远超预测 40-70% 上限）；同 0.79M 参数，fmt_D 到 fmt_O 从 3.5% 一跃至 100%；证明 **model capacity 从来不是 bottleneck，training signal 设计才是**；v6 = coverage + depth + OOD 曝光 + context alignment 四条件；0.79M transformer 学到 compositional algorithm 不是 lookup；commit `ea033da`
 - [x] 对比表 10 行填完
 - [ ] **下一步 primary**：**S5.b loss_mask**——v5.2 视角下从"工程 detour"升级为"c fix candidate"；预测 c per-step 21%→60%+，em 40-60%
 
@@ -1793,7 +1794,7 @@ compositional coverage: 每个 subskill 都单独教 ✓ (fmt_M/N/O 都有)
 - 改：`eval_cr.py` 加 "O" 到所有 fmt_D branches
 - 新：`config/train_cr_context_aligned.py`
 - 数据 / ckpt 产物（不入 git）：`data/chickens_rabbits_context_aligned/{train,val,val_ood}{.bin,_mask.bin}`, `out-cr-context-aligned/ckpt.pt`（5000 iter，val_loss=0.0954）
-- commit `_HASH_TODO_`（见 §8）
+- commit `ea033da` ✅ 2026-07-02 傍晚（exp(context-aligned): S5.k fmt_O — v5.3 SUPER-BULL, OOD em 100% (v6 recipe unlocked)）
 
 ---
 
@@ -1894,6 +1895,7 @@ git checkout -b hack/chickens-rabbits
 | `1f611f6` | exp(signal): S5.h fmt_N 全 4 subskill — v5 direct test → **v5.1 "coverage + depth 双必要"** (每 aux 12.5k 曝光让 4 步 per-step 都涨到 18-22% 但远低于 fmt_M 单 aux 50k 的 70%；parse_fail 39.5% multi-task pattern confusion 新出问题；GPT-4 训练数据 coverage × depth 两维度得到精细化验证) | 2026-07-01 |
 | `59f1d05` | exp(signal): S5.i fmt_N v2 4x depth — v5.1 direct test → **v5.2 "transfer 效率不均"** (每 aux 50k 让 2H/D/r 都跳到 73-75% 完美验证 depth 假设、parse_fail 39.5→7.0%；**但 c 卡在 21%** cascade tail transfer 严重 broken；重大 implication：S5.b loss_mask 可能是 c fix) | 2026-07-01 |
 | `5bacd8f` | exp(loss-mask): S5.j fmt_L SFT-style loss mask — **v5.2 部分证伪 → v5.3**（loss_mask 机制 work（train_loss 0.22→0.094），但 OOD em 从 fmt_N v2 的 17% 反跌到 4.5%；根因：**fmt_L 没引入 OOD subskill 曝光**，loss_mask 改梯度分布不改数据分布；v5.3：需要 (a) aux 曝光 OOD + (b) aux 用完整主任务 context **两者组合**） | 2026-07-02 |
+| `ea033da` | 🎉 exp(context-aligned): S5.k fmt_O — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**（OOD em **100%**，每步 per-step 100%，跟 IID 一模一样；同 0.79M 参数、fmt_D 只到 3.5%、fmt_O 达 100%；证明 model capacity 从来不是 bottleneck，training signal 设计才是；v6 = coverage + depth + OOD 曝光 + context alignment 四条件） | 2026-07-02 |
 
 ---
 

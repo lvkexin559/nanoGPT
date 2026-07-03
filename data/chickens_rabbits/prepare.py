@@ -50,10 +50,24 @@ Six prompt formats are supported (set via --format):
                        supervises ONLY answer tokens. This is the SFT-style
                        loss-mask trick: model sees full context every batch
                        but only gets gradient signal on the answer portion.
-                       (S5.j) v5.2 direct falsification test: same subskill
-                       exposure as fmt_D main task but each subskill sees
-                       the FULL main-task context during training — should
-                       fix the c cascade transfer failure of fmt_N v2.
+                       (S5.j) v5.2 direct falsification test — turned out
+                       loss_mask alone doesn't fix OOD because it doesn't
+                       introduce OOD subskill exposure. Prompted v5.3.
+  O  context-aligned:  All samples share the SAME fmt_D text layout
+                       ("H=X F=Y\n2H=A D=B r=C c=D\n") — even the aux ones.
+                       What differs is the mask:
+                         50%  main task (H in [2, h_max_train]), mask=1 on
+                              the whole answer (2H D r c)
+                         12.5% aux_mul2   (H in [2, h_max_aux]), mask=1 only
+                              on the "2H=A" tokens
+                         12.5% aux_sub_F2H, mask=1 only on "D=B"
+                         12.5% aux_div_D,   mask=1 only on "r=C"
+                         12.5% aux_sub_Hr,  mask=1 only on "c=D"
+                       (S5.k) v5.3 direct falsification test: this is the
+                       combination that satisfies BOTH (a) OOD exposure and
+                       (b) full main-task context per subskill. Predicts
+                       every per-step should jump to ~70% and OOD em to
+                       ~40-70%.
 
 Three splits are produced:
   train.bin       train samples (H in [2, 20], allows duplicates)
@@ -71,6 +85,7 @@ Usage:
     python data/chickens_rabbits/prepare.py --format M --out-dir data/chickens_rabbits_multitask/
     python data/chickens_rabbits/prepare.py --format N --out-dir data/chickens_rabbits_multitask_full/
     python data/chickens_rabbits/prepare.py --format L --out-dir data/chickens_rabbits_lossmask/
+    python data/chickens_rabbits/prepare.py --format O --out-dir data/chickens_rabbits_context_aligned/
 """
 import argparse
 import os
@@ -212,6 +227,61 @@ def fmt_L_with_mask(H: int, F: int, c: int, r: int):
     return text, mask
 
 
+def fmt_O_with_mask(H: int, c: int, subskill: str):
+    """fmt_O: every sample has the exact same fmt_D text layout. What
+    differs is which characters get mask=1 (i.e. get supervised).
+    This is the v5.3 direct falsification test — teaches the aux subskill
+    with the SAME context the model will face at inference time.
+
+    subskill in {"main", "mul2", "sub_F2H", "div_D", "sub_Hr"}:
+      main    -> supervise entire answer (2H D r c \\n)   [fmt_L-style main]
+      mul2    -> supervise ONLY the "2H=A" 6 chars
+      sub_F2H -> supervise ONLY the " D=B" 5 chars
+      div_D   -> supervise ONLY the " r=C" 5 chars
+      sub_Hr  -> supervise ONLY the " c=D" 5 chars
+
+    Returns (text, mask). Text is identical fmt_D layout regardless of
+    subskill; only the mask differs. This means the model's forward pass
+    on aux samples sees the identical attention context as it will at
+    inference — closing the aux-vs-main context gap that fmt_N v2 couldn't."""
+    r = H - c
+    F = 2 * c + 4 * r
+    # Assemble text piece by piece so we can compute exact char offsets
+    prompt   = f"H={rev_pad(H)} F={rev_pad(F)}\n"
+    step_2H  = f"2H={rev_pad(2*H)}"        # 6 chars: "2H=" + 3-digit
+    step_D   = f" D={rev_pad(F - 2*H)}"    # 6 chars: " D=" + 3-digit
+    step_r   = f" r={rev_pad(r)}"          # 6 chars
+    step_c   = f" c={rev_pad(c)}"          # 6 chars
+    end      = "\n"                        # 1 char
+    text = prompt + step_2H + step_D + step_r + step_c + end
+    # Cumulative offsets:
+    p0 = len(prompt)                        # answer starts here (after prompt+\n)
+    p1 = p0 + len(step_2H)                  # after 2H=A
+    p2 = p1 + len(step_D)                   # after " D=B"
+    p3 = p2 + len(step_r)                   # after " r=C"
+    p4 = p3 + len(step_c)                   # after " c=D"
+    p5 = p4 + len(end)                      # after "\n" (= len(text))
+    mask = [0] * len(text)
+    if subskill == "main":
+        for i in range(p0, p5):
+            mask[i] = 1
+    elif subskill == "mul2":
+        for i in range(p0, p1):
+            mask[i] = 1
+    elif subskill == "sub_F2H":
+        for i in range(p1, p2):
+            mask[i] = 1
+    elif subskill == "div_D":
+        for i in range(p2, p3):
+            mask[i] = 1
+    elif subskill == "sub_Hr":
+        for i in range(p3, p4):
+            mask[i] = 1
+    else:
+        raise ValueError(f"unknown subskill {subskill!r} for fmt_O")
+    return text, mask
+
+
 FORMATTERS = {"A": fmt_A, "B": fmt_B, "C": fmt_C, "D": fmt_D}
 
 
@@ -249,6 +319,51 @@ def build_split_multitask(n: int, h_min_main: int, h_max_main: int,
     print(f"  [fmt_M] main={n_main} ({100*n_main/n:.1f}%)  "
           f"aux_mul2={n_aux} ({100*n_aux/n:.1f}%)")
     return "".join(chunks)
+
+
+def build_split_lossmask_context_aligned(n: int, h_min_main: int, h_max_main: int,
+                                          h_min_aux: int, h_max_aux: int,
+                                          seed: int, main_ratio: float = 0.5):
+    """fmt_O split generator: mixed main-task + 4 context-aligned aux tasks.
+    Every sample has identical fmt_D text layout; only the mask differs.
+
+    50%   main task  (H in [h_min_main, h_max_main]): mask covers full answer
+    12.5% aux_mul2   (H in [h_min_aux,  h_max_aux]):  mask on "2H=A"
+    12.5% aux_sub_F2H:                                mask on " D=B"
+    12.5% aux_div_D:                                  mask on " r=C"
+    12.5% aux_sub_Hr:                                 mask on " c=D"
+    """
+    rng = random.Random(seed)
+    aux_subskills = ["mul2", "sub_F2H", "div_D", "sub_Hr"]
+    counts = {"main": 0, **{f"aux_{s}": 0 for s in aux_subskills}}
+    text_parts = []
+    mask_parts = []
+    supervised_tokens = 0
+    total_tokens = 0
+    for _ in range(n):
+        if rng.random() < main_ratio:
+            H, F, c, r = gen_sample(h_min_main, h_max_main, rng)
+            text, mask = fmt_O_with_mask(H, c, "main")
+            counts["main"] += 1
+        else:
+            H, F, c, r = gen_sample(h_min_aux, h_max_aux, rng)
+            subskill = aux_subskills[rng.randrange(len(aux_subskills))]
+            text, mask = fmt_O_with_mask(H, c, subskill)
+            counts[f"aux_{subskill}"] += 1
+        text_parts.append(text)
+        mask_parts.append(mask)
+        supervised_tokens += sum(mask)
+        total_tokens += len(mask)
+    full_text = "".join(text_parts)
+    full_mask = [m for chunk in mask_parts for m in chunk]
+    assert len(full_text) == len(full_mask), \
+        f"[fmt_O] text/mask length mismatch: {len(full_text)} vs {len(full_mask)}"
+    pct = {k: 100 * v / n for k, v in counts.items()}
+    print(f"  [fmt_O] main={counts['main']} ({pct['main']:.1f}%)  "
+          + "  ".join(f"aux_{s}={counts[f'aux_{s}']} ({pct[f'aux_{s}']:.1f}%)"
+                      for s in aux_subskills))
+    print(f"          supervised_frac={supervised_tokens/total_tokens:.3f}")
+    return full_text, full_mask
 
 
 def build_split_lossmask(n: int, h_min: int, h_max: int, seed: int):
@@ -342,9 +457,9 @@ def sanity_check(format_key: str, formatter) -> None:
                 f"formatter {format_key!r} emitted char {ch!r} not in vocab"
             )
 
-    # 5. fmt_C/D/M/N/L rev_pad must be perfectly invertible across our number
+    # 5. fmt_C/D/M/N/L/O rev_pad must be perfectly invertible across our number
     #    range, otherwise the eval parser will silently decode wrong integers
-    if format_key in ("C", "D", "M", "N", "L"):
+    if format_key in ("C", "D", "M", "N", "L", "O"):
         for n in [0, 1, 5, 8, 10, 16, 22, 40, 50, 100, 168, 200]:
             padded_rev = rev_pad(n)
             decoded = int(padded_rev[::-1])
@@ -366,6 +481,59 @@ def sanity_check(format_key: str, formatter) -> None:
                     raise AssertionError(
                         f"fmt_mul2({h}) emitted char {ch!r} not in vocab"
                     )
+
+    # 6c. fmt_O-specific: verify (a) text is invariant across the 5 subskill
+    #     variants, (b) aux masks are disjoint subsets of the main mask, and
+    #     (c) union(aux masks) + end("\\n") == main mask.
+    if format_key == "O":
+        rng_probe = random.Random(456)
+        for _ in range(20):
+            H, F, c, r = gen_sample(2, 50, rng_probe)
+            texts = {}
+            masks = {}
+            for sk in ["main", "mul2", "sub_F2H", "div_D", "sub_Hr"]:
+                t, m = fmt_O_with_mask(H, c, sk)
+                texts[sk] = t
+                masks[sk] = m
+                if len(t) != len(m):
+                    raise AssertionError(
+                        f"fmt_O({sk}) length mismatch (H={H},c={c}): {len(t)} vs {len(m)}"
+                    )
+            # (a) text must be identical across all subskill choices
+            for sk in ["mul2", "sub_F2H", "div_D", "sub_Hr"]:
+                if texts[sk] != texts["main"]:
+                    raise AssertionError(
+                        f"fmt_O text differs between main and {sk} at (H={H},c={c})"
+                    )
+            # (b) each aux mask position that = 1 must have main mask = 1
+            for sk in ["mul2", "sub_F2H", "div_D", "sub_Hr"]:
+                for i, m in enumerate(masks[sk]):
+                    if m == 1 and masks["main"][i] != 1:
+                        raise AssertionError(
+                            f"fmt_O aux {sk} supervises pos {i} but main doesn't "
+                            f"(H={H},c={c})"
+                        )
+            # (c) aux masks are disjoint pairwise
+            for a, b in [("mul2","sub_F2H"), ("mul2","div_D"), ("mul2","sub_Hr"),
+                          ("sub_F2H","div_D"), ("sub_F2H","sub_Hr"),
+                          ("div_D","sub_Hr")]:
+                for i in range(len(masks[a])):
+                    if masks[a][i] == 1 and masks[b][i] == 1:
+                        raise AssertionError(
+                            f"fmt_O aux masks {a} and {b} both = 1 at pos {i}"
+                        )
+            # (d) union of 4 aux masks + \\n = main mask
+            aux_sum = sum(sum(masks[sk]) for sk in ["mul2", "sub_F2H", "div_D", "sub_Hr"])
+            main_sum = sum(masks["main"])
+            if aux_sum + 1 != main_sum:  # +1 for the trailing '\n' in main only
+                raise AssertionError(
+                    f"fmt_O mask arithmetic: aux_sum={aux_sum} + 1(\\n) != main={main_sum} "
+                    f"(H={H},c={c})"
+                )
+            # (e) vocab coverage
+            for ch in texts["main"]:
+                if ch not in stoi:
+                    raise AssertionError(f"fmt_O emitted char {ch!r} not in vocab")
 
     # 6b. fmt_L-specific: verify text/mask length invariant and mask semantics
     if format_key == "L":
@@ -433,7 +601,7 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
         try:
             head, tail = line.split(" F=")
             H_str, F_str = head[2:], tail
-            if formatter_key in ("C", "D", "M", "N", "L"):
+            if formatter_key in ("C", "D", "M", "N", "L", "O"):
                 H = int(H_str[::-1])
                 F = int(F_str[::-1])
             else:
@@ -447,11 +615,13 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N", "L"], default="A",
+    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N", "L", "O"], default="A",
                         help="prompt format: A=direct, B=CoT, C=reversed, D=rev+CoT, "
                              "M=multi-task mix (fmt_D main + fmt_mul2 aux), "
                              "N=multi-task full (fmt_D main + all 4 subskill auxes), "
-                             "L=loss-masked fmt_D (SFT-style, writes *_mask.bin)")
+                             "L=loss-masked fmt_D (SFT-style, writes *_mask.bin), "
+                             "O=context-aligned multi-task (v5.3 test, fmt_D text with "
+                             "subskill-specific mask, writes *_mask.bin)")
     parser.add_argument("--n-train", type=int, default=100_000)
     parser.add_argument("--n-val", type=int, default=1_000)
     parser.add_argument("--n-val-ood", type=int, default=1_000)
@@ -477,11 +647,11 @@ def main():
             f"h_min_ood={args.h_min_ood} <= h_max_train={args.h_max_train}"
         )
 
-    # fmt_M/N/L share fmt_D as the main-task formatter (used for val/val_ood).
-    # For sanity_check we probe with fmt_D since fmt_L returns (text, mask)
-    # tuple which doesn't match the single-return formatter signature; fmt_D
+    # fmt_M/N/L/O share fmt_D as the main-task formatter (used for val/val_ood).
+    # For sanity_check we probe with fmt_D since fmt_L/O return (text, mask)
+    # tuples which don't match the single-return formatter signature; fmt_D
     # covers the vocab-coverage test just as well.
-    formatter = fmt_D if args.format in ("M", "N", "L") else FORMATTERS[args.format]
+    formatter = fmt_D if args.format in ("M", "N", "L", "O") else FORMATTERS[args.format]
     out_dir = (
         os.path.abspath(args.out_dir)
         if args.out_dir is not None
@@ -502,6 +672,11 @@ def main():
     elif args.format == "L":
         print(f"[gen] fmt_L: fmt_D text + companion *_mask.bin "
               f"(prompt=0, answer=1). train.py masks loss via ignore_index=-1.")
+    elif args.format == "O":
+        print(f"[gen] fmt_O: fmt_D text with subskill-specific masks (v5.3 test)")
+        print(f"      main H in [2, {args.h_max_train}], "
+              f"aux H in [2, {args.h_max_aux}]; "
+              f"50% main + 12.5% each of 4 subskill auxes")
 
     splits = {
         "train":   (args.n_train,   2,                  args.h_max_train, args.seed),
@@ -527,6 +702,16 @@ def main():
             # All 3 splits get masks so train_loss/val_loss are comparable
             # (both computed only on answer tokens).
             text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
+        elif args.format == "O":
+            if name == "train":
+                # fmt_O train: 50% main + 12.5% each of 4 context-aligned auxes
+                text, mask_list = build_split_lossmask_context_aligned(
+                    n, h_lo, h_hi, 2, args.h_max_aux, seed)
+            else:
+                # fmt_O val / val_ood: main-task only with prompt/answer mask.
+                # Same content as fmt_L val split; used to compute masked val
+                # loss comparable with masked train loss.
+                text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
         else:
             text = build_split(n, h_lo, h_hi, formatter, seed)
         ids = encode(text)
@@ -564,20 +749,32 @@ def main():
     # "F=X 2H=Y\n" (sub_F2H) doesn't start with "H=", also skipped.
     # Only true main-task lines "H=X F=Y" reach the H-check.
     # fmt_L text is identical to fmt_D (no auxes), so filter also works.
-    for line in train_text.split("\n"):
-        if line.startswith("H=") and " F=" in line:
-            try:
-                H_str = line.split(" F=")[0][2:]
-                H = int(H_str[::-1]) if args.format in ("C", "D", "M", "N", "L") else int(H_str)
-                if H > args.h_max_train:
-                    leaked += 1
-            except (ValueError, IndexError):
-                pass
-    if leaked > 0:
-        raise AssertionError(
-            f"OOD leak: train.bin contains {leaked} samples with H > {args.h_max_train}"
-        )
-    print(f"[sanity] OOD isolation in train.bin: OK (0 leaks above H={args.h_max_train})")
+    #
+    # fmt_O: SKIP this check entirely. fmt_O's aux samples use the same
+    # fmt_D text layout ("H=X F=Y\n...") but with H drawn from the aux
+    # range [2, h_max_aux]. From text alone we cannot distinguish aux from
+    # main (mask is what differs). The "leak" here is by design — aux is
+    # supposed to expose OOD H values. main-task samples DO stay within
+    # h_max_train by construction (see build_split_lossmask_context_aligned).
+    if args.format != "O":
+        for line in train_text.split("\n"):
+            if line.startswith("H=") and " F=" in line:
+                try:
+                    H_str = line.split(" F=")[0][2:]
+                    H = int(H_str[::-1]) if args.format in ("C", "D", "M", "N", "L") else int(H_str)
+                    if H > args.h_max_train:
+                        leaked += 1
+                except (ValueError, IndexError):
+                    pass
+    if args.format != "O":
+        if leaked > 0:
+            raise AssertionError(
+                f"OOD leak: train.bin contains {leaked} samples with H > {args.h_max_train}"
+            )
+        print(f"[sanity] OOD isolation in train.bin: OK (0 leaks above H={args.h_max_train})")
+    else:
+        print(f"[sanity] fmt_O: OOD isolation check SKIPPED (aux samples "
+              f"by design use H in [2, {args.h_max_aux}] with fmt_D text)")
 
     # Eyeball: print the first 3 decoded samples so a human can verify the
     # formula by hand right after running prepare.py.

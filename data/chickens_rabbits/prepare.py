@@ -68,6 +68,18 @@ Six prompt formats are supported (set via --format):
                        (b) full main-task context per subskill. Predicts
                        every per-step should jump to ~70% and OOD em to
                        ~40-70%.
+  P  full-answer mask: Identical text distribution as fmt_O (50% main +
+                       12.5% each of 4 aux type, aux H covers OOD range).
+                       BUT the mask is fmt_L-style: prompt=0, answer=1 for
+                       ALL samples (main and aux). So aux samples degenerate
+                       into "extra main-task samples with H in [2, h_max_aux]".
+                       (S5.l) v6 mask-role falsification: does mask's
+                       "supervise only the target subskill" matter, or does
+                       any mask work as long as data mix covers OOD? If
+                       fmt_P works on val_ood [21,50] but breaks on val_ood
+                       [51,100] while fmt_O generalizes, mask's role IS to
+                       prevent lookup shortcut and force algorithmic
+                       learning.
 
 Three splits are produced:
   train.bin       train samples (H in [2, 20], allows duplicates)
@@ -321,6 +333,52 @@ def build_split_multitask(n: int, h_min_main: int, h_max_main: int,
     return "".join(chunks)
 
 
+def build_split_full_answer_mask(n: int, h_min_main: int, h_max_main: int,
+                                  h_min_aux: int, h_max_aux: int,
+                                  seed: int, main_ratio: float = 0.5):
+    """fmt_P split generator: same text distribution as fmt_O (main + 4 aux
+    all in complete fmt_D layout, aux H covers OOD) BUT mask is fmt_L-style
+    prompt/answer split — the WHOLE answer is supervised regardless of
+    whether the sample was drawn as 'main' or a specific aux subskill.
+
+    Compared to fmt_O:
+      - Identical text.bin
+      - Different mask.bin: supervised_frac ≈ 0.68 (vs fmt_O's 0.42)
+    Semantically: aux samples become extra main-task samples with wider H.
+
+    Predicts: on val_ood [h_max_train+1, h_max_aux] em ~= 100% (H in
+    training distribution now); on val_ood outside [2, h_max_aux] em
+    should crash (no OOD exposure past h_max_aux)."""
+    rng = random.Random(seed)
+    aux_subskills = ["mul2", "sub_F2H", "div_D", "sub_Hr"]
+    counts = {"main": 0, **{f"aux_{s}": 0 for s in aux_subskills}}
+    text_parts = []
+    mask_parts = []
+    for _ in range(n):
+        if rng.random() < main_ratio:
+            H, F, c, r = gen_sample(h_min_main, h_max_main, rng)
+            counts["main"] += 1
+        else:
+            H, F, c, r = gen_sample(h_min_aux, h_max_aux, rng)
+            counts[f"aux_{aux_subskills[rng.randrange(len(aux_subskills))]}"] += 1
+        # Whichever draw path we took, emit full fmt_D text and full-answer mask
+        text, mask = fmt_L_with_mask(H, F, c, r)
+        text_parts.append(text)
+        mask_parts.append(mask)
+    full_text = "".join(text_parts)
+    full_mask = [m for chunk in mask_parts for m in chunk]
+    assert len(full_text) == len(full_mask), \
+        f"[fmt_P] text/mask length mismatch: {len(full_text)} vs {len(full_mask)}"
+    supervised_frac = sum(full_mask) / len(full_mask) if full_mask else 0
+    pct = {k: 100 * v / n for k, v in counts.items()}
+    print(f"  [fmt_P] main={counts['main']} ({pct['main']:.1f}%)  "
+          + "  ".join(f"aux_{s}(*)={counts[f'aux_{s}']} ({pct[f'aux_{s}']:.1f}%)"
+                      for s in aux_subskills))
+    print(f"          supervised_frac={supervised_frac:.3f}  "
+          f"(vs fmt_O's ~0.42 — all answer positions supervised)")
+    return full_text, full_mask
+
+
 def build_split_lossmask_context_aligned(n: int, h_min_main: int, h_max_main: int,
                                           h_min_aux: int, h_max_aux: int,
                                           seed: int, main_ratio: float = 0.5):
@@ -457,9 +515,9 @@ def sanity_check(format_key: str, formatter) -> None:
                 f"formatter {format_key!r} emitted char {ch!r} not in vocab"
             )
 
-    # 5. fmt_C/D/M/N/L/O rev_pad must be perfectly invertible across our number
+    # 5. fmt_C/D/M/N/L/O/P rev_pad must be perfectly invertible across our number
     #    range, otherwise the eval parser will silently decode wrong integers
-    if format_key in ("C", "D", "M", "N", "L", "O"):
+    if format_key in ("C", "D", "M", "N", "L", "O", "P"):
         for n in [0, 1, 5, 8, 10, 16, 22, 40, 50, 100, 168, 200]:
             padded_rev = rev_pad(n)
             decoded = int(padded_rev[::-1])
@@ -601,7 +659,7 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
         try:
             head, tail = line.split(" F=")
             H_str, F_str = head[2:], tail
-            if formatter_key in ("C", "D", "M", "N", "L", "O"):
+            if formatter_key in ("C", "D", "M", "N", "L", "O", "P"):
                 H = int(H_str[::-1])
                 F = int(F_str[::-1])
             else:
@@ -615,13 +673,14 @@ def report_unique_combos(text: str, formatter_key: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N", "L", "O"], default="A",
+    parser.add_argument("--format", choices=list(FORMATTERS) + ["M", "N", "L", "O", "P"], default="A",
                         help="prompt format: A=direct, B=CoT, C=reversed, D=rev+CoT, "
                              "M=multi-task mix (fmt_D main + fmt_mul2 aux), "
                              "N=multi-task full (fmt_D main + all 4 subskill auxes), "
                              "L=loss-masked fmt_D (SFT-style, writes *_mask.bin), "
                              "O=context-aligned multi-task (v5.3 test, fmt_D text with "
-                             "subskill-specific mask, writes *_mask.bin)")
+                             "subskill-specific mask, writes *_mask.bin), "
+                             "P=fmt_O text mix + fmt_L full-answer mask (S5.l mask-role test)")
     parser.add_argument("--n-train", type=int, default=100_000)
     parser.add_argument("--n-val", type=int, default=1_000)
     parser.add_argument("--n-val-ood", type=int, default=1_000)
@@ -647,11 +706,11 @@ def main():
             f"h_min_ood={args.h_min_ood} <= h_max_train={args.h_max_train}"
         )
 
-    # fmt_M/N/L/O share fmt_D as the main-task formatter (used for val/val_ood).
-    # For sanity_check we probe with fmt_D since fmt_L/O return (text, mask)
+    # fmt_M/N/L/O/P share fmt_D as the main-task formatter (used for val/val_ood).
+    # For sanity_check we probe with fmt_D since fmt_L/O/P return (text, mask)
     # tuples which don't match the single-return formatter signature; fmt_D
     # covers the vocab-coverage test just as well.
-    formatter = fmt_D if args.format in ("M", "N", "L", "O") else FORMATTERS[args.format]
+    formatter = fmt_D if args.format in ("M", "N", "L", "O", "P") else FORMATTERS[args.format]
     out_dir = (
         os.path.abspath(args.out_dir)
         if args.out_dir is not None
@@ -677,6 +736,10 @@ def main():
         print(f"      main H in [2, {args.h_max_train}], "
               f"aux H in [2, {args.h_max_aux}]; "
               f"50% main + 12.5% each of 4 subskill auxes")
+    elif args.format == "P":
+        print(f"[gen] fmt_P: fmt_O text mix + full-answer mask (S5.l mask-role test)")
+        print(f"      main H in [2, {args.h_max_train}], "
+              f"aux H in [2, {args.h_max_aux}] (aux degenerates into wider-H main)")
 
     splits = {
         "train":   (args.n_train,   2,                  args.h_max_train, args.seed),
@@ -711,6 +774,13 @@ def main():
                 # fmt_O val / val_ood: main-task only with prompt/answer mask.
                 # Same content as fmt_L val split; used to compute masked val
                 # loss comparable with masked train loss.
+                text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
+        elif args.format == "P":
+            if name == "train":
+                # fmt_P train: same text mix as fmt_O but full-answer mask.
+                text, mask_list = build_split_full_answer_mask(
+                    n, h_lo, h_hi, 2, args.h_max_aux, seed)
+            else:
                 text, mask_list = build_split_lossmask(n, h_lo, h_hi, seed)
         else:
             text = build_split(n, h_lo, h_hi, formatter, seed)
@@ -750,13 +820,13 @@ def main():
     # Only true main-task lines "H=X F=Y" reach the H-check.
     # fmt_L text is identical to fmt_D (no auxes), so filter also works.
     #
-    # fmt_O: SKIP this check entirely. fmt_O's aux samples use the same
+    # fmt_O/P: SKIP this check entirely. Their aux samples use the same
     # fmt_D text layout ("H=X F=Y\n...") but with H drawn from the aux
     # range [2, h_max_aux]. From text alone we cannot distinguish aux from
-    # main (mask is what differs). The "leak" here is by design — aux is
-    # supposed to expose OOD H values. main-task samples DO stay within
-    # h_max_train by construction (see build_split_lossmask_context_aligned).
-    if args.format != "O":
+    # main (mask is what differs, and for fmt_P the mask is identical to
+    # main). The "leak" here is by design — aux is supposed to expose
+    # OOD H values. main-task samples DO stay within h_max_train.
+    if args.format not in ("O", "P"):
         for line in train_text.split("\n"):
             if line.startswith("H=") and " F=" in line:
                 try:
@@ -766,14 +836,14 @@ def main():
                         leaked += 1
                 except (ValueError, IndexError):
                     pass
-    if args.format != "O":
+    if args.format not in ("O", "P"):
         if leaked > 0:
             raise AssertionError(
                 f"OOD leak: train.bin contains {leaked} samples with H > {args.h_max_train}"
             )
         print(f"[sanity] OOD isolation in train.bin: OK (0 leaks above H={args.h_max_train})")
     else:
-        print(f"[sanity] fmt_O: OOD isolation check SKIPPED (aux samples "
+        print(f"[sanity] fmt_{args.format}: OOD isolation check SKIPPED (aux samples "
               f"by design use H in [2, {args.h_max_aux}] with fmt_D text)")
 
     # Eyeball: print the first 3 decoded samples so a human can verify the

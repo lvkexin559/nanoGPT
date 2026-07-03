@@ -413,7 +413,8 @@ python eval_cr.py --ckpt out-cr-cot/ckpt.pt --ood-h-min 51 --ood-h-max 100
 | **H fmt_N 全 4 subskill** (multi-task full，0.79M) | **100.0%** | **100.0%** | **15.5%** | **84.3%** | **v5 direct falsification test — 中性偏 bear**：4 步 per-step 全部 18-22%(比 fmt_D 涨但远低于 fmt_M 的 70%)；parse_fail 39.5% (multi-task 引发 pattern 混淆)；**v5 → v5.1：coverage 必要但不够，还需 subskill depth**，见 §5.11 |
 | **I fmt_N v2 加 depth** (每 aux 50k，0.79M) | **100.0%** | **100.0%** | **17.0%** | **91.9%** | **v5.1 depth 假设 3/4 命中**：2H/D/r per-step 从 22% 跳到 73-75%（跟 fmt_M 的 70% 完美对齐）、parse_fail 从 39.5% → 7.0%；**但 c per-step 仍 21% 完全没动**(cascade tail transfer 失败) → **v5.2：subskill transfer 效率不均，靠后 subskill 需 context alignment (loss_mask)**，见 §5.12 |
 | **J fmt_L loss-mask SFT** (0.79M) | **100.0%** | **100.0%** | **4.5%** | **82.8%** | **v5.2 部分证伪 → v5.3**：loss_mask alone 不 fix（train_loss 0.22→0.094 证明 mask 机制 work，但 OOD em 从 fmt_N v2 的 17% 反跌到 4.5%）；根因是 **fmt_L 完全没引入 OOD subskill 曝光**——loss_mask 改梯度分布，不改数据分布；**v5.3：需要 aux 曝光 OOD H (a) + aux 用完整主任务 context (b) 两者组合**，见 §5.13 |
-| **K fmt_O context-aligned** (0.79M) | **100.0%** | **100.0%** | **100.0%** ★ | **100.0%** | 🎉 **v5.3 super-bull 命中 → v6 完整 recipe**！aux 用完整 fmt_D text (a)+(b) 双满足；每步 per-step 全 100%；从 fmt_D 的 3.5% 一跃到 100%，同 0.79M 参数不变。**证明 model capacity 从来不是 bottleneck,training signal 设计才是**。0.79M transformer 完全能学 compositional algorithm，不只是 lookup，见 §5.14 |
+| **K fmt_O context-aligned** (0.79M) | **100.0%** | **100.0%** | **100.0%** ★ | **100.0%** | 🎉 **v5.3 super-bull 命中 → v6 完整 recipe**！aux 用完整 fmt_D text (a)+(b) 双满足；每步 per-step 全 100%；从 fmt_D 的 3.5% 一跃到 100%，同 0.79M 参数不变。**证明 model capacity 从来不是 bottleneck,training signal 设计才是**，见 §5.14 |
+| **L fmt_P full-mask** (对照实验，0.79M) | 100.0% | 100.0% | **100.0%**([21,50]) / **1.5%**([51,100]) | 100.0%/77.0% | **v6→v6.1 双重发现**：fmt_P 全 mask 在 [21,50] 也拿 100%(仅靠 aux 扩训练分布)但 [51,100] 崩到 1.5%——证明**mask 机制 + aux H 范围决定"subskill lookup 边界"**；**fmt_O 在 [51,100] 也只 2.5%**——之前认为 fmt_O 学"算法" 是过度乐观，实际学的是"subskill 组合的 lookup"，仍受 aux H 范围硬性限制，见 §5.15 |
 | D + loss masking | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 | E 去掉 PE | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 
@@ -1796,6 +1797,102 @@ compositional coverage: 每个 subskill 都单独教 ✓ (fmt_M/N/O 都有)
 - 新：`config/train_cr_context_aligned.py`
 - 数据 / ckpt 产物（不入 git）：`data/chickens_rabbits_context_aligned/{train,val,val_ood}{.bin,_mask.bin}`, `out-cr-context-aligned/ckpt.pt`（5000 iter，val_loss=0.0954）
 - commit `ea033da` ✅ 2026-07-02 傍晚（exp(context-aligned): S5.k fmt_O — v5.3 SUPER-BULL, OOD em 100% (v6 recipe unlocked)）
+
+### 5.15 · S5.l fmt_P mask-role 对照 & 超-OOD test：v6 → v6.1 "仍是 subskill lookup"（2026-07-03 上午）
+
+> **动机**：Round 4 后回看,思考"如果 fmt_O 的 mask 全变 1 会怎样"→ 引出两个 direct falsification test:
+> 1. **fmt_P**: fmt_O 的 text 混合 + fmt_L 的全 answer mask,验证"mask 只 supervise subskill 是否是 fmt_O 成功的关键"
+> 2. **超-OOD test**: 用 `eval_cr.py --ood-h-min 51 --ood-h-max 100` 测 fmt_O/P 在 aux H 范围**之外**的表现,验证"fmt_O 学到的是不是真算法"
+
+#### 实验设置
+
+**fmt_P 数据(vs fmt_O)**：
+- **相同**: text 混合分布(50% main H∈[2,20] + 50% aux H∈[2,50],都是完整 fmt_D layout)
+- **不同**: mask 策略——fmt_P 用 fmt_L-style(prompt=0, answer=1),fmt_O 用 subskill-specific(只 target 6 char=1)
+
+| | fmt_O train_mask.bin | fmt_P train_mask.bin |
+|---|---:|---:|
+| supervised_frac | 0.42 | **0.68** |
+| aux 样本处理 | 只 supervise 单 subskill(6 char) | supervise 整个 answer(25 char) |
+| aux 语义 | "只教这一步"教学法 | "aux 退化为扩 H 范围的额外 main 样本" |
+
+**代码改动**：
+- `prepare.py` 加 `fmt_P` + `build_split_full_answer_mask`(复用 fmt_L text 生成 + 混合分布)
+- `eval_cr.py` 加 "P" 到所有 fmt_D branches(text 结构相同)
+- `train.py` 不动(mask 逻辑复用 fmt_L 的)
+
+**预测三件套**：
+
+| ckpt | val_ood [21,50] | val_ood [51,100] | 判词 |
+|---|---:|---:|---|
+| fmt_O 预测 | 100% ✓ (已知) | **60-100%** (算法应外推) | 学到算法 |
+| fmt_P 预测 | **~100%** (H 已在训练分布) | **0-20%** (lookup 失效) | 学到 lookup |
+
+**Bull case**: 若 fmt_O [51,100] 保持高、fmt_P [51,100] 崩 → **mask 机制的价值 = 强制学算法而非 lookup**,直接 verify Q4.1
+
+#### 实测(n=200/split,贪心)
+
+| ckpt | val_ood [21,50] em | val_ood [51,100] em | 2H | D | r | c |
+|---|---:|---:|---:|---:|---:|---:|
+| fmt_O | **100%** ✓ | **2.5%** ★ | 1.0% | 9.5% | 9.5% | 17.5% |
+| fmt_P | **100%** ✓ | **1.5%** | 3.5% | 2.5% | 2.5% | 13.0% |
+| (fmt_D baseline 参考) | 3.5% | ~0% | — | — | — | — |
+
+**一半命中,一半意外**：
+
+- ✓ fmt_P 在 [21,50] 100%(H 已在训练分布,预测命中)
+- ✓ fmt_P 在 [51,100] 崩到 1.5%(纯 lookup,预测命中)
+- **✗ fmt_O 在 [51,100] 也只 2.5%,per-step 全 broken**(反预测 —— 学"算法"应能外推)
+
+#### 关键新洞察:v6 → v6.1
+
+**原 v6 假设**(§5.14): fmt_O 学到的是"跨 H 无限外推的抽象乘 2 算法"——**这是过度乐观**。
+
+**v6.1 修正**:
+- fmt_O 学到的是 **"在训练 H 范围 [2,50] 内可 compose 的 subskill lookup"**,不是"任意 H 的通用算法"
+- **每个 subskill(乘 2、减法、除法、减法)仍然是分布内查表**,只是查表的"表"从"整题 (H,F)→(c,r) 4 元组"降维成"4 个独立一元 lookup"
+- **外推能力仍受 aux H 分布范围硬性限制**——要 unlock H∈[51,100],aux 必须覆盖 [2,100]
+
+这跟 S5.e (h40) "查表边界硬" 的结论**同构**,只是 fmt_O 里"表"是 subskill-level,fmt_D 里是 sample-level。
+
+#### mask 机制的价值仍然存在(但比原预期弱)
+
+| | fmt_D | fmt_P(全 mask + 扩 H)| fmt_O(subskill mask + 扩 H)|
+|---|---:|---:|---:|
+| 学到什么 | 整题查表 | 整题查表(表更大)| **subskill 查表**(表更 modular)|
+| val_ood [21,50] | 3.5% | 100% | 100% |
+| val_ood [51,100] | ~0% | 1.5% | 2.5% |
+
+**fmt_O 在 [51,100] 比 fmt_P 略高(2.5 vs 1.5)**,per-step c 也略高(17.5 vs 13),说明 subskill mask 仍带来微弱的"抽象化"gain——**但远达不到"学到算法" 的强 claim**。
+
+#### 修正后的 Round 4 Q4.1 punchline
+
+原版:*"看到 LM OOD 拿 100%,别恭喜,问训练数据组合覆盖"*
+**v6.1 版**:
+
+> **看到 LM OOD 拿 100%,先问训练数据的每个 subskill 的分布范围是否覆盖了 test 分布。如果 aux H ∈ [2, X],test H ∈ [2, X] em 100% 只证明 "subskill lookup 表覆盖了 test",不证明 "学到了算法"。真正的"算法外推"需要在 subskill H 之外的 test 也保持高精度**。
+
+#### 深层 LLM 启示的进一步 refinement
+
+之前 §5.10-5.14 说 "GPT-4 靠 training data mix"—— **v6.1 精细化**:
+
+> GPT-4 的看似"外推能力"其实是**"训练分布覆盖了几乎所有 test 可能的 subskill 组合"**。即使拆分到 subskill 层面,每个 subskill 也都在极大规模数据下见过极大分布——**并非"从少数样本学到通用算法"**。fmt_O 是这个机制的干净 toy replica,fmt_P 是它的 counterpart(全 mask 变成 sample-level lookup)。GPT-4 的成功 = **规模 × subskill lookup 表 × 分布覆盖**,不是 emergent algorithmic ability。
+
+#### 项目重定位
+
+之前 §5.14 认为"fmt_O 是 completion 的 recipe"——**v6.1 修正**:fmt_O 是 **"多步 task 的 subskill-modular lookup recipe"**。这个 recipe:
+- **✓ 能 unlock 训练分布内的 OOD**(fmt_D [21,50] 打不开,fmt_O 100% 打开)
+- **✗ 不能真的"学算法"**(fmt_O 在 [51,100] 也崩)
+- **✓ 比 sample-level lookup 更 modular**(subskill 之间可 compose,泛化性稍好)
+
+**对 project 收官的影响**:这个发现 refines v6 recipe 的 claim scope,不推翻。fmt_O 100% 仍然是 project 最大成就,但需要 caveat "只在 aux H 覆盖的范围内".
+
+#### 新增产物
+- 改:`prepare.py` 加 fmt_P + `build_split_full_answer_mask`
+- 改:`eval_cr.py` 加 "P" 到 fmt_D branches
+- 新:`config/train_cr_full_mask.py`
+- 数据/ckpt:`data/chickens_rabbits_full_mask/`, `out-cr-full-mask/ckpt.pt`(val_loss=0.0984)
+- commit `_HASH_TODO_`
 
 ---
 

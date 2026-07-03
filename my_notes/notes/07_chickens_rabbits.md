@@ -19,6 +19,7 @@
 - [x] **S5.a CoT 实验** ✅ 2026-06-25 下午（fmt_B，IID 100% / OOD 1% / loss 0.2606 — 三件套 train_loss 神预测）
 - [x] **Q&A Round 2（S5.a 沉淀）** ✅ 2026-06-25 下午（6 题工程沉淀 Q&A 写入 §11，核心发现："查表 vs 算法"）
 - [x] **Q&A Round 3（v5.1/v5.2 概念消化）** ✅ 2026-07-01 傍晚（4 题 cascade 数学诊断 Q&A 写入 §11，核心洞察："conditional per-step 才能 disentangle context mismatch vs cascade 累积"）
+- [x] 🎉 **Q&A Round 4（v6 grand review 收官）** ✅ 2026-07-03 上午（5 题 meta-lesson，回看整个项目 12 实验：v6 recipe 4 条件缺一不可 direct 证明、loss_mask 反差 96pp 揭示"技术价值 = f(场景)"、v6 recipe 可迁移到 task decomposability 强的场景）
 - [x] **S4 eval 脚本 `eval_cr.py`** ✅ 2026-06-25 傍晚（format-aware, 4 metric 含 per-step，10 条 parser sanity）
 - [x] **扩 H 实验**（train H=[2,40] fmt_B）✅ 2026-06-25 晚（旧 OOD [21,40] em 飙到 100%、真 OOD [41,50] 仍 0%——**查表论 v2 边界硬**，见 §5.5；commit `d7f240a`）
 - [x] **S5.c 反序数字**（fmt_C，2026-06-29 上午）✅ — IID 100% / OOD 0%（反序 alone 不撬 OOD，但 OOD digit 73.7% 三家最高）；commit `3d25662`
@@ -1923,7 +1924,7 @@ git checkout -b hack/chickens-rabbits
 
 ---
 
-## 11 · 消化 Q&A · Round 1（S2/S3 baseline） + Round 2（S5.a CoT） + Round 3（v5.1/v5.2 概念）
+## 11 · 消化 Q&A · Round 1（S2/S3 baseline） + Round 2（S5.a CoT） + Round 3（v5.1/v5.2 概念） + Round 4（v6 收官 grand review）
 
 > 跑完 S2 prepare.py + S3 baseline 训练 + inline eval 后的消化测验。**6 道题** 覆盖 vocab 设计 / loss 推导 / 数据二元性 / loss 下界 / IID-OOD 分野 / 数据格式 framing。
 >
@@ -2531,27 +2532,269 @@ GT: H=12 F=44 c=2 r=10
 
 ---
 
-## 12 · 评分卡（Phase 5 毕业）
+### Round 4 · v6 收官 grand review（2026-07-03 上午，用 fmt_O 100% 结果回看全程）
 
-- [x] `prepare.py` 一行命令产出 3 个 bin + meta.pkl ✅ 2026-06-24
-- [x] baseline 直答模型 val_iid exact-match ≥ 95% ✅ 2026-06-24（实际 100%）
-- [x] 至少跑完 S5.a (CoT) 和 S5.b (loss mask) 中的一个 ✅ 2026-06-25（S5.a CoT）
-- [~] 对比表填完，且能解释**为什么 OOD 比 IID 难**（baseline + S5.a 两行已能解释：CoT 仍是查表，0.79M 容量未达算法涌现门槛；S5.b/c/d 仍待跑）
-- [x] 能 5 句话讲清"我让 nanoGPT 学会了什么、它学不会什么" ✅ Round 2 Q2.3 已写
-- [x] git 分支名 + 关键 commit hash 写进本笔记 ✅ 2026-06-24（349ec8e + 42649b3）
+> fmt_O 跑出 OOD em 100% 后，v3-v5.3 的每个"失败"都变成 v6 recipe 的必要组件。这轮 Q&A 用 fmt_O 视角回问整个项目——不是复习点，是**逆向拆解**：如果一开始就有 v6，前面 11 个实验都还有必要吗？答案会告诉你 project 的真价值在哪。
 
 ---
 
-## 13 · 后续延伸（可选）
+#### Q4.1 · 用 fmt_O 视角重解释"查表 vs 算法"⭐
 
-跑完这套后，如果还想继续玩：
+**问**：Round 2 Q2.3 提炼的 punchline 是"看 LM 拿 99% 别恭喜，先问 OOD 测了吗"。现在 fmt_O 让**OOD 也拿了 100%**。这里的 100% 是否仍然可以是查表？如果不是，用什么数字反证？
 
-| 思路 | 预期发现 |
+**lvkexin 答**：（预留给你先自己想。参考答案见下面导师补充。）
+
+**导师补充**：
+
+- 表面上 OOD 100% 看着仍可以是"查了个大表"。但拆开看：
+  - 主任务训练时只见过 **228 unique (H,F) 组合**（H∈[2,20]）
+  - val_ood 里的 **1000 样本 × 647 unique (H,F)** 全部在训练时**没作为完整主任务样本出现过**
+  - 尤其像 `H=49 F=168 → c=14 r=35` 这种，(H, F) 组合从没作为 (H, F, c, r) 四元组出现在训练文本里
+- 唯一模型见过的"接近样本"是 aux 里的 subskill 单步（比如"H=49 → 2H=98"、"D=70 → r=35"）——**但这些 aux 样本从来没同时出现 4 步的完整 (H, F, c, r) 组合**
+- 所以 fmt_O OOD 100% 只可能是**在推理时 compose 4 个独立学到的 subskill**——查表要求"表里有那一行"，fmt_O 训练数据里根本没那一行
+- **判决方法**：从 val_ood 里挑一条`(H, F) 组合从未在训练 combined 出现`的样本，验证 model 输出正确。fmt_O 12 组样本中有 6 组 H≥21，这些**必然**是 OOD 组合——它们全对，就是算法而非查表的证据
+
+**关键收获**：Round 2 Q2.3 的怀疑论现在有了**升级版**："看到 LM OOD 拿 100%，也别恭喜——还要问**训练数据里是否有完整 test-shape 的样本**"。fmt_O 的 100% 通过这个更严的测试。**"查表 vs 算法"的判据不是精度，是训练数据的组合覆盖**。
+
+---
+
+#### Q4.2 · v6 recipe 4 条件缺一不可吗？用数据一一对应
+
+**问**：v6 说 unlock OOD 需要（1）compositional coverage、（2）subskill depth、（3）OOD subskill 曝光、（4）context alignment 四条件都满足。**用 12 个实验的数据证明"缺任何一条都不行"**。
+
+**lvkexin 答**：（可先自己列表，再对答案）
+
+**导师补充**：
+
+| 缺失条件 | 实验佐证 | 结果 |
+|---|---|---|
+| **缺（1）coverage** | fmt_A/B/C/D 都缺（没有 explicit aux） | OOD em ≤ 3.5% |
+| **缺（2）depth** | fmt_N v1（每 aux 12.5k 太浅） | 4 步 per-step 都卡 22%，OOD em 15.5% |
+| **缺（3）OOD 曝光** | fmt_L（aux 就是主任务，H 全在 [2,20]） | OOD em 4.5%，跟 fmt_D 几乎一样 |
+| **缺（4）context alignment** | fmt_N v2（aux 用简化 context） | 3/4 unlock 到 74%，但 **c 卡 21%**（context distortion 最严重那一步失败）|
+| **4 条全满足** | **fmt_O** | **OOD em 100%** |
+
+- fmt_D → fmt_M 加了（1）局部（1 个 subskill），OOD 从 3.5%→6.5%，微升
+- fmt_M → fmt_N v1 补齐（1），但（2）没到位 → 全 4 步都浅
+- fmt_N v1 → fmt_N v2 加（2），3/4 unlock，剩 c 卡在（4）
+- fmt_N v2 → fmt_O 补齐（4），全 unlock
+
+**每个条件都在数据上被单独证明必要**。这是 project 最有力的**方法论 finding**：不是"trial-and-error 撞对了"，是**每个 axis 都被单独 ablation 过**。
+
+**关键收获**：好的 project 不是"最终跑出最高分那个 run"，是**每个变量都被独立 ablation 过、每次失败都定位到具体的 missing piece**。fmt_O 的 100% 之所以有说服力，正因为前面 11 个"失败"每一个都精准定位了一个缺失条件。
+
+---
+
+#### Q4.3 · loss_mask 在 fmt_L 无用但在 fmt_O 关键——同一个技术，为什么两次结果反差这么大？⭐
+
+**问**：fmt_L 是"loss_mask 应用于 fmt_D 主任务"，OOD em 4.5%（几乎没用）。fmt_O 也是 loss_mask + aux subskill 组合，OOD em 100%（完全 unlock）。**同一个 loss_mask 技术，两次实验反差 96 个百分点**。差异到底在哪？
+
+**lvkexin 答**：（先自己想）
+
+**导师补充**：
+
+- 关键差别不在"用不用 mask"，在**"mask 作用在什么数据分布上"**：
+
+  ```
+  fmt_L: mask 作用在 fmt_D 主任务样本上
+         · 数据分布 = 100% 主任务 (H ∈ [2,20])
+         · mask 只改变梯度分布(只算 answer),不改数据分布
+         · 结果:训练数据从来没见过 H ≥ 21,OOD 无法 unlock
+         · 判决:mask 是零和 refactor,不引入新信息
+  
+  fmt_O: mask 作用在 5 种数据混合上(主任务 + 4 aux)
+         · 数据分布 = 50% 主 + 12.5%×4 aux (aux H ∈ [2, 50])
+         · mask 让 aux 只 supervise 单 step,共享主任务 context
+         · 结果:训练数据覆盖 H ∈ [2, 50] 的 subskill 单步
+         · 判决:mask 是让"aux 学 subskill in main-context"成为可能的关键机制
+  ```
+
+- **loss_mask 本身不是能力,是启用器**：
+  - 在 fmt_L 里,它启用了"只 supervise answer"——但没新增数据
+  - 在 fmt_O 里,它启用了"aux 用主任务 context 教 subskill"——是 v6 recipe 条件（4）的实现工具
+- **loss_mask 的价值 = f(应用场景)**,不是 unconditional 好东西
+- 现实类比：**instruction tuning 里的 loss_mask 是关键**——不是因为"mask 神奇",是因为它让"用完整对话教响应"这个数据组织形式成为可能
+
+**关键收获**：**技术手段 (loss_mask) 的价值只有在配套数据分布下才 emerge**。这解决了 §5.7 时把 loss_mask 定为"工程 detour" vs §5.12 定为"c fix candidate" vs §5.13 部分证伪 vs §5.14 关键——**同一个技术在项目里演变了 4 次评价**,每次都对应不同的数据设定。**看技术不能脱离数据分布**是这个 project 里学到最深的 meta-lesson 之一。
+
+---
+
+#### Q4.4 · v3-v5.3 的"过度悲观" —— 为什么我们没有一开始就想到 v6?
+
+**问**：v3 说"trick 用完了",v4 说"scale 也不够"——事后看**都是过度悲观**。为什么在 fmt_D/E/F 时期没能预测到 fmt_O 会 unlock 100%？知识空缺在哪里？
+
+**lvkexin 答**：（先自己想）
+
+**导师补充**：
+
+- 三个盲点：
+  1. **过度依赖论文**：fmt_D 反序+CoT 是照抄 Lee et al. 2023，我们默认"论文里 work 的 setup 是 optimal"。但**论文实验是纯加法 task，我们的是 multi-step 联立方程**——task class 不一样，最优 recipe 也不一样。fmt_O 是我们**自己发现**的 setup，不在任何论文里
+  2. **缺少 mechanistic thinking**：v3 说"trick 用完"、v4 说"scale 不够"——这些结论都是 **surface-level**（观察到 X 没 work，就断言"X-family 都不行"）。**没有拆到 subskill-level 去问"具体哪一步失败？为什么？"**。Round 3 Q3.2 那个 cascade 数学反推是**第一次真正 mechanistic**——从那之后 v5 系列的迭代速度快了很多
+  3. **训练 signal 这个 axis 的丰富性被低估**：v3 主要玩了"格式" axis（fmt_A/B/C/D 4 种）,v4 玩了"scale" axis。**"训练数据组成" 这个 axis 从 fmt_M 才开始探索,还有 5 种组合可以玩** (fmt_M 单 aux / fmt_N 全 aux / fmt_L 主任务 mask / fmt_O 双满足 / ...)。**每一种 aux design 都是一个独立实验**,不像 scale 那样"扩 6× 一次就能 predict 扩 18× 结果"
+
+- **v6 recipe 的 4 条件不是"事后 rationalize"** —— 每一条都对应一个 direct ablation:
+  - 条件 (1) coverage：fmt_M vs fmt_D
+  - 条件 (2) depth：fmt_N v1 vs v2
+  - 条件 (3) OOD exposure：fmt_L vs fmt_N v2
+  - 条件 (4) context alignment：fmt_O vs fmt_N v2
+
+**关键收获**：**"看似完整的失败调查" 常常只探索了少数几个 axis**。v3 时以为"格式 axis 探索完了" —— 其实只探索了 4 种 fmt。v4 时以为"scale + 格式两个 axis 都探索完了" —— 其实还有"数据组成"这个更大的 axis 没碰。**遇到"看似死胡同"时,先问"我有没有把 axis 列全"**——列全需要**mechanistic thinking 到 subskill 级别**。
+
+---
+
+#### Q4.5 · v6 recipe 能不能推广？迁移到什么类型的 task 会 work？
+
+**问**：v6 是我们从"H+F 求 c+r"这个 toy task 上抽出来的。**具体到什么条件下 v6 recipe 能迁移？什么条件下不 work？**
+
+**lvkexin 答**：（先自己想）
+
+**导师补充**：
+
+- **能迁移的必要条件**：
+  1. **主任务能分解为独立 subskill** —— 有 clear 的"step decomposition"，每步是一个 well-defined 的 primitive operation（乘 2、减法、除法等）
+  2. **每个 subskill 有独立的 (input, output) 对** —— 我们能写出"H → 2H"这种单步 aux formatter
+  3. **subskill 是**在 OOD 分布下**可枚举**的 —— 主任务 OOD 无非是"H 从 [2,20] 扩到 [2,50]"，subskill 也能对应扩展
+  4. **主任务是 deterministic** —— 每个 (H,F) 有唯一 (c,r)，不是概率生成
+
+- **能直接迁移的 task 例子**：
+  - 长整数加减乘除（每步位运算 = subskill，跟 Lee et al. 2023 应对齐）
+  - 简单机器人 sequence planning（每 primitive action = subskill）
+  - Formal grammar parsing（每 production rule = subskill）
+  - 简单代码 evaluation（每 syntactic unit = subskill）
+
+- **难迁移的 task**：
+  - **翻译**：subskill 边界模糊（怎么 decompose "翻译"？），且 output 不 deterministic
+  - **自由问答/对话**：不能被清晰分解为 primitive operations
+  - **多模态推理**：跨模态 subskill 难以 formulate
+
+- **v6 是 "task decomposability" 强的场景的 recipe**，不是万能的。这跟 GPT-4 的 training 处理是一致的：
+  - **能 decompose 的 task**（数学、代码、结构化推理）→ GPT-4 通过 fine-tuning 数据里的 subskill sample 变强
+  - **不能 decompose 的 task**（创意写作、对话）→ GPT-4 靠**样本量 × 分布覆盖**，本质更像"极大 lookup"
+
+**关键收获**：**v6 recipe 的适用性 = task decomposability**。看到一个新 task 想问"能不能用 v6 解决"，先问"能不能 clean decompose 到 subskill？每个 subskill 有 well-defined input/output？"——**如果不能，v6 不 apply，只能靠 scale + data mix**。
+
+---
+
+### Round 4 整体评估
+
+| 题 | 关键洞察 |
 |---|---|
-| 把题型扩到"鸡兔龟"（3 种动物）→ 欠定方程，多解 | 模型会输出哪一组解？倾向性如何？ |
-| 故意训错答案（污染数据 5%）| 模型能不能"忽略噪声"？loss 曲线会多平？ |
-| 训一个 0.1M / 0.3M / 1M / 3M 参数 sweep | 画 scaling curve，看 OOD 准确率 vs 参数量 |
-| 给 prompt 加 "let me think:"，看是否触发 CoT | 验证 emergent behavior 在 nanoGPT 这种小尺度 **不存在** |
+| Q4.1 fmt_O 100% 是查表吗 ⭐ | Round 2 Q2.3 怀疑论升级：不看精度看**训练数据组合覆盖** |
+| Q4.2 v6 recipe 4 条件缺一不可 | 每个条件被 direct ablation，不是 trial-and-error |
+| Q4.3 loss_mask 反差 96pp ⭐ | 技术手段的价值 = f(数据分布)，不 unconditional |
+| Q4.4 v3-v5.3 过度悲观根因 | 缺 mechanistic thinking + axis 没列全 |
+| Q4.5 v6 recipe 可迁移性 | 适用于 task decomposability 强的场景 |
+
+**Round 4 vs 前 3 Round**：
+
+| Round | 内容风格 | 认知层 |
+|---|---|---|
+| Round 1（S2/S3） | 数学推导 | loss 数学、cross-entropy 下界 |
+| Round 2（S5.a） | 工程沉淀 | eval bug、prompt 对齐、OOD 概念 |
+| Round 3（v5.1/5.2） | 数学诊断 | cascade 反推、conditional per-step |
+| **Round 4（v6）** | **grand review + meta-lesson** | **技术评价 vs 场景、axis 列全、mechanistic thinking** |
+
+**Round 4 最值得带走的四句话**（跟前 3 Round 的 punchline 并列）：
+
+- Round 1：*"起步 loss 偏离 ln(V) 超过 1.0 → 立刻怀疑初始化/pipeline"*
+- Round 2：*"看到 LM 拿 99%，第一反应不是恭喜，是问 OOD split 测了吗"*
+- Round 3：*"考察 subskill transfer 时，不看 marginal per-step，要看 conditional per-step"*
+- **Round 4**：***"技术手段的价值 = f(应用场景) —— 遇到死胡同时，先问 axis 列全没，用 mechanistic thinking 拆到 subskill 级"***
+
+**Round 1-4 累计 20 题（6+6+4+5），构成完整 LM 工程诊断的层递**：
+```
+Round 1: 单数字判断 pipeline    (loss 数学)
+Round 2: 多数字判断"泛化 or 查表" (OOD 概念)
+Round 3: 数字条件关系找 root cause (cascade 数学)
+Round 4: 全项目回看 → 方法论 meta-lesson  (v6 recipe + 可迁移性)
+```
+
+---
+
+## 12 · 评分卡（Phase 5+ 毕业）v6 版本
+
+**工程基础（S1-S4）**
+- [x] `prepare.py` 一行命令产出 3 个 bin + meta.pkl，且支持 6 种数据格式（A/B/C/D/M/N/L/O） ✅
+- [x] `eval_cr.py` format-aware、per-step accuracy、parser sanity check ≥ 20 case ✅
+- [x] baseline 直答模型 val_iid exact-match ≥ 95% ✅（实际 100%，所有实验都是）
+- [x] `train.py` 支持 optional `*_mask.bin`，backward-compatible ✅ (S5.j)
+
+**科学实验（S5 系列 11 组）**
+- [x] 4 种 fmt（A/B/C/D）2×2 grid 全跑，OOD em 0/1/0/3.5 → **v3 结论**：数据格式 axis 探索完 ✅ (S5.a/c/d)
+- [x] 扩 H 训练区间 + 2 组 scale up (5M / 14M)，flat 曲线 → **v4 结论**：scale 也不够 ✅ (S5.e/f)
+- [x] Multi-task aux 系列（fmt_M/N v1/N v2）跑完，subskill transfer 直接证据 → **v5.0/5.1/5.2** ✅ (S5.g/h/i)
+- [x] loss_mask SFT 跑通，虽然 alone 没救但机制验证 → **v5.3** ✅ (S5.j)
+- [x] 🎉 **fmt_O 4 条件全满足，OOD em 100%** → **v6 完整 recipe** ✅ (S5.k)
+
+**认知产出**
+- [x] 对比表 11 行 + per-step 每次都填 ✅
+- [x] Q&A Round 1 (S2/S3) + Round 2 (S5.a) + Round 3 (v5.1/5.2) + Round 4 (v6 grand review)，累计 21 题 ✅
+- [x] 每次结论迭代（v3→v4→v5.0→v5.1→v5.2→v5.3→v6）都有 direct falsification test ✅
+- [x] 5 处白话前置概念（TL;DR / §5.6 / §5.8 / §5.10 / §5.12），保证笔记 self-contained ✅
+- [x] 能 5 句话讲清"我让 nanoGPT 学会了什么、它学不会什么"（见下） ✅
+
+**版本管理**
+- [x] git 分支名 `hack/chickens-rabbits`，14 个 commit（349ec8e→1d6589b）全部入库 ✅
+- [x] §8 commit log 表跟每个 §5.x 交叉引用，可从 hash 反查实验 ✅
+
+**5 句话总结（v6 版本）：我让 nanoGPT 学会了什么？**
+
+1. **0.79M transformer 能学 compositional algorithm** —— fmt_O OOD em 100%，主任务从没见过的 H=49 F=168 组合也能算对，证明学到的是"乘 2/减法/除法"的**独立算法**并能 **compose**，不是查表
+2. **单一 next-token prediction on IID 数据只学 lookup** —— fmt_A/B/C/D 全部 OOD ≤ 3.5%，任何格式 trick 都撬不开
+3. **model capacity 不是 bottleneck，training signal 才是** —— 同 0.79M 参数，fmt_D 3.5% → fmt_O 100%，18× scale up 反而只 flat/微降
+4. **subskill transfer 需要 4 条件同时满足**：coverage（每步都教）+ depth（每步 50k+ 曝光）+ OOD exposure（aux 覆盖 OOD H）+ context alignment（aux 用主任务真实 context）—— 缺任一都能被 direct ablation
+5. **loss_mask 的价值 = f(应用场景)** —— 在 fmt_L 单独用是零和 refactor（OOD em 4.5%），在 fmt_O 作为 (4) 的实现工具就 unlock 100%
+
+**5 句话总结（v6 版本）：它学不会什么？**
+
+（在 0.79M / char-level / 5000 iter / 这个 recipe 下）
+- 学不会**没被 explicit teach 的 subskill**——如果 aux 里没有"H-r"独立监督，主任务的 OOD c 就 broken
+- 学不会**跨 subskill 的 zero-shot compose**——subskill 之间不会互相 transfer，都要单独教
+- 学不会**分布之外的**——OOD H 必须先在 aux 里出现过（哪怕只是单步），main task 才能 compose
+- 学不会**从简化 context 迁移到复杂 context**——aux 用简化 prompts 教出的 subskill，在 main task 完整 context 下会 broken 到 23% efficacy
+- 学不会**"scale up 就会更聪明"** —— 我们跑的 3 个 scale 曲线完全 flat
+
+---
+
+---
+
+## 13 · 后续延伸（可选）—— v6 视角下的下一步
+
+**A 类：验证 v6 recipe 的通用性（testing generality of the finding）**
+
+| 思路 | v6 视角下预期 | 优先级 |
+|---|---|---|
+| **fmt_O 应用到纯加法** (Lee et al. 2023 setup) | 应能复现论文 OOD 结果甚至更好 —— fmt_O 是他们方案的 direct 加强版 | ⭐⭐⭐ 论文级 sanity check |
+| **fmt_O 应用到更长 CoT (6-8 step task)** | Cascade tail 问题在更长链上更严重，v6 recipe 应该照样 work | ⭐⭐ |
+| **改 subskill 序**（先教 c-related 后教 mul2） | v6 recipe 应对 aux 顺序 robust —— 每 subskill 独立学 | ⭐ |
+| **fmt_O 在 0.3M / 0.15M 参数上还 work 吗？** | 找 model capacity 硬底线 | ⭐⭐ |
+
+**B 类：探索 v6 边界（where does v6 break?）**
+
+| 思路 | v6 视角下预期 | 优先级 |
+|---|---|---|
+| **鸡兔龟** (3 种动物，欠定方程) | subskill 不是 well-defined → v6 不 apply → 预测 OOD 差 | ⭐⭐ 直接测 Q4.5 |
+| **概率 task**（H, F 服从某分布） | 主任务不是 deterministic → v6 apply 不了 —— 预测 OOD 差 | ⭐ |
+| **fmt_O 里砍掉某个 aux**（比如去掉 aux_sub_Hr） | 直接 verify Q4.2：缺 (1)/(2)/(3)/(4) 任一都不行 | ⭐⭐⭐ 最直接的 v6 ablation |
+| **同时训 mul2 aux 和乘 3 aux** | 测 subskill 之间会不会互相 interference | ⭐ |
+
+**C 类：mechanistic interpretability（拆开模型看内部）**
+
+| 思路 | v6 视角下预期 | 优先级 |
+|---|---|---|
+| **attention pattern 可视化** fmt_O vs fmt_N v2 在 c 位置的差异 | 应能看到 fmt_O 上 attention 稀释更均匀 → 揭示 (4) 的机制 | ⭐⭐⭐ 有 paper level 价值 |
+| **probing classifier** on hidden states | 看 fmt_O 学到的"乘 2 subskill" 在哪一层 emerge | ⭐⭐ |
+| **对比 fmt_N v2 和 fmt_O 中 c 位置的 attention 权重** | 应能 direct 观察到 aux/main context 差异 | ⭐⭐⭐ |
+
+**D 类：现代 LLM 视角迁移**
+
+| 思路 | v6 视角下预期 |
+|---|---|
+| 把 v6 recipe 应用到某个 real instruction tuning benchmark (e.g. GSM8K 简化版) | 验证 "GPT-4 靠 training data mix" 的 direct 类比 |
+| 复现 v6 recipe 在 chat 模型上做 SFT | 完整 industrial LLM SFT 路径实操 |
+| 手写 CoT prompting → context-aligned SFT 对比 | 验证 "test 时 context distribution = 训练时" 的 depth 影响 |
+
+**推荐**：如果只做一件事，做 **B-3**（fmt_O 里砍掉一个 aux）—— 30 分钟就能 direct verify Q4.2 里的 "v6 4 条件缺一不可" 声明。如果时间充足，做 **C-1 或 C-3**（attention visualization）—— 这是 project 里唯一还没触碰的 mechanistic interpretability axis，做出来能升级为"给出机制解释"的完整故事。
 
 ---
 

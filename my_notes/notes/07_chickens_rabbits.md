@@ -32,6 +32,7 @@
 - [x] **S5.j fmt_L loss-mask SFT**（2026-07-02 下午）✅ — **v5.2 direct falsification test → v5.3 refinement**；loss_mask 工程机制 100% work（train_loss 0.22→0.094），但 OOD em 4.5%（比 fmt_N v2 反跌 12.5pp）；根因是 **fmt_L 没引入 OOD subskill 曝光**——loss_mask 改梯度分布不改数据分布；**v5.3**：coverage + depth + (a) aux 曝光 OOD + (b) aux 用完整主任务 context **四个必要条件**；loss_mask 的真价值是 SFT / instruction tuning 通用工程技巧；commit `5bacd8f`
 - [x] 🎉 **S5.k fmt_O context-aligned**（2026-07-02 傍晚）✅ — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**；aux 用完整 fmt_D text，同时满足 (a)+(b)；**OOD em 100%，每步 per-step 100%**（远超预测 40-70% 上限）；同 0.79M 参数，fmt_D 到 fmt_O 从 3.5% 一跃至 100%；证明 **model capacity 从来不是 bottleneck，training signal 设计才是**；v6 = coverage + depth + OOD 曝光 + context alignment 四条件；commit `ea033da`
 - [x] **S5.l fmt_P mask-role + super-OOD test**（2026-07-03 上午）✅ — **v6 → v6.1 refinement**；fmt_P 用 fmt_L 全 mask 策略 + fmt_O text 混合分布，[21,50] em 100%(H 已在训练分布)但 [51,100] 崩 1.5%；**fmt_O 在 [51,100] 也只 2.5%**——反证 §5.14 "fmt_O 学到算法"是过度乐观，实际学的仍是 **subskill-level lookup**，只是查表粒度从 sample 降到 subskill；v6.1: recipe 只 unlock **aux H 范围内**的 OOD，真"算法外推"需要 aux H = 无限(不现实)；commit `b1a5707`
+- [x] 🎉 **S5.m 3-way × 2-scale wide 大对照**（2026-07-03 下午）✅ — **v6.2 → v6.3 双 gate 模型定型**；主任务 H=[5,100],aux [2,200],rev_width=4,3 fmt × 2 scale = 12 数据点；**wide_O 5M IID 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；capacity 单独打开 IID(D 从 30%→86%)但对 OOD 无用(FAR 仍 0%);context alignment 在 5M 下仍关键(fmt_O NEAR 86% vs fmt_N NEAR 21%);**v6.3 公式:OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**;LLM 启示: Scale × Coverage 独立双 gate,乘积决定 em;commit `790ba7a`
 - [x] 对比表 10 行填完
 - [ ] **下一步 primary**：**S5.b loss_mask**——v5.2 视角下从"工程 detour"升级为"c fix candidate"；预测 c per-step 21%→60%+，em 40-60%
 
@@ -2009,7 +2010,7 @@ OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
 - 改:`eval_cr.py` 从 meta 读 rev_width + h_min_train(向后兼容)
 - 新:6 个 config `train_cr_wide_[D/N/O]{,_5m_[D/N/O]}.py`
 - 数据/ckpt(不入 git):3 个 `data/chickens_rabbits_wide_*/` + 6 个 `out-cr-wide-*/ckpt.pt`
-- commit `_HASH_TODO_`
+- commit `790ba7a` ✅ 2026-07-03 下午（exp(wide): S5.m 3-way (D/N/O) × 2-scale (0.79M/5M) — v6.2 → v6.3 dual-gate model）
 
 ---
 
@@ -2112,6 +2113,7 @@ git checkout -b hack/chickens-rabbits
 | `5bacd8f` | exp(loss-mask): S5.j fmt_L SFT-style loss mask — **v5.2 部分证伪 → v5.3**（loss_mask 机制 work（train_loss 0.22→0.094），但 OOD em 从 fmt_N v2 的 17% 反跌到 4.5%；根因：**fmt_L 没引入 OOD subskill 曝光**，loss_mask 改梯度分布不改数据分布；v5.3：需要 (a) aux 曝光 OOD + (b) aux 用完整主任务 context **两者组合**） | 2026-07-02 |
 | `ea033da` | 🎉 exp(context-aligned): S5.k fmt_O — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**（OOD em **100%**，每步 per-step 100%，跟 IID 一模一样；同 0.79M 参数、fmt_D 只到 3.5%、fmt_O 达 100%；证明 model capacity 从来不是 bottleneck，training signal 设计才是；v6 = coverage + depth + OOD 曝光 + context alignment 四条件） | 2026-07-02 |
 | `b1a5707` | exp(mask-role): S5.l fmt_P + super-OOD test — **v6 → v6.1 refinement**（fmt_P 全 mask + 扩 H 在 [21,50] 也 100% 但 [51,100] 崩 1.5%；**fmt_O 在 [51,100] 也只 2.5%**——反证 fmt_O 学的仍是 **subskill lookup** 不是真算法；v6.1: recipe scope 限于 aux H 覆盖范围内的 OOD） | 2026-07-03 |
+| `790ba7a` | 🎉 exp(wide): S5.m 3-way × 2-scale 大对照 — **v6.2 → v6.3 双 gate 定型**（H_train=[5,100], rev_width=4, aux [2,200], 3 fmt × 2 scale = 12 数据点；**wide_O 5M IID/BELOW 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；v6.3 公式 OOD em ≈ capacity × subskill_transfer_within_aux；GPT-4 = Scale × Coverage 双维度乘积） | 2026-07-03 |
 
 ---
 

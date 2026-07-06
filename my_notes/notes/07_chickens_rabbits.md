@@ -33,8 +33,10 @@
 - [x] 🎉 **S5.k fmt_O context-aligned**（2026-07-02 傍晚）✅ — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**；aux 用完整 fmt_D text，同时满足 (a)+(b)；**OOD em 100%，每步 per-step 100%**（远超预测 40-70% 上限）；同 0.79M 参数，fmt_D 到 fmt_O 从 3.5% 一跃至 100%；证明 **model capacity 从来不是 bottleneck，training signal 设计才是**；v6 = coverage + depth + OOD 曝光 + context alignment 四条件；commit `ea033da`
 - [x] **S5.l fmt_P mask-role + super-OOD test**（2026-07-03 上午）✅ — **v6 → v6.1 refinement**；fmt_P 用 fmt_L 全 mask 策略 + fmt_O text 混合分布，[21,50] em 100%(H 已在训练分布)但 [51,100] 崩 1.5%；**fmt_O 在 [51,100] 也只 2.5%**——反证 §5.14 "fmt_O 学到算法"是过度乐观，实际学的仍是 **subskill-level lookup**，只是查表粒度从 sample 降到 subskill；v6.1: recipe 只 unlock **aux H 范围内**的 OOD，真"算法外推"需要 aux H = 无限(不现实)；commit `b1a5707`
 - [x] 🎉 **S5.m 3-way × 2-scale wide 大对照**（2026-07-03 下午）✅ — **v6.2 → v6.3 双 gate 模型定型**；主任务 H=[5,100],aux [2,200],rev_width=4,3 fmt × 2 scale = 12 数据点；**wide_O 5M IID 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；capacity 单独打开 IID(D 从 30%→86%)但对 OOD 无用(FAR 仍 0%);context alignment 在 5M 下仍关键(fmt_O NEAR 86% vs fmt_N NEAR 21%);**v6.3 公式:OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**;LLM 启示: Scale × Coverage 独立双 gate,乘积决定 em;commit `790ba7a`
-- [x] 对比表 10 行填完
-- [ ] **下一步 primary**：**S5.b loss_mask**——v5.2 视角下从"工程 detour"升级为"c fix candidate"；预测 c per-step 21%→60%+，em 40-60%
+- [x] 对比表 12 行填完(baseline / S5.a-h + 扩 H + S5.i-m + wide 5M O)
+- [x] 🎉 **§14 Grand Summary 收官** ✅ 2026-07-06 上午（8 天 13 实验完整 arc 总结：v3 → v6.3 双 gate 模型 + 4 个最深 finding + LLM 启示 v6.3 版 + 4 个方法论 lesson + "给未来自己"的一段话）
+
+**Project 状态**:**Phase 5+ 鸡兔同笼专题正式收官**（v6.3,19 commits,~3100 行笔记,已 push 到 [github.com/lvkexin559/nanoGPT](https://github.com/lvkexin559/nanoGPT)）
 
 **git 分支**：`hack/chickens-rabbits`（commit hash 见 §8）
 
@@ -3015,9 +3017,132 @@ Round 4: 全项目回看 → 方法论 meta-lesson  (v6 recipe + 可迁移性)
 
 ---
 
+## 14 · Grand Summary · Project 收官（v6.3，2026-07-06）
+
+> 8 天 13 实验的完整总结。**这一节是 project 的最上层入口**——第一次翻笔记的人,从这里开始 10 分钟能 grok 全部故事,然后再去看 §5 各 milestone 细节。
+
+### TL;DR(一段话)
+
+**8 天从"训不出鸡兔同笼算法"迭代到"v6.3 双 gate 完整 recipe"**。同 0.79M transformer，fmt_D baseline OOD em 3.5% → fmt_O 100%（aux 覆盖内 OOD）。核心发现:**model capacity 从来不是 bottleneck，training signal + 数据分布覆盖 才是**。项目最深洞察:**GPT-4 的"外推能力" ≈ Scale × Coverage 双维度乘积，不是 emergent algorithmic ability**。
+
+### 8 天 arc(v3 → v6.3 结论迭代)
+
+```
+Day 1-2 (S1-S4):       setup + eval framework
+Day 3   (S5.a):        fmt_B CoT — OOD em 3.5%, 数据格式几乎不撬 OOD
+Day 3   (h40 扩 H):    v4 "查表边界硬" 第一次提出
+Day 4   (S5.c/d):      fmt_C/D 反序 + CoT → v3 "数据格式 trick 用完"
+Day 4-5 (S5.e/f):      5M/14M scale up → v4 "scale 也不够" (flat curve)
+Day 6   (S5.g):        fmt_M 1-aux 让 2H subskill 从 2.5%→70% → v5.0 coverage
+Day 6   (S5.h):        fmt_N v1 全 4 aux 但每个 12.5k → v5.1 需要 depth
+Day 6   (S5.i):        fmt_N v2 每 aux 50k → v5.2 但 c 卡 21%
+Day 7   (S5.j):        fmt_L loss_mask 单独用 → v5.3: (a) OOD + (b) context 双必要
+Day 7   (S5.k):        fmt_O context-aligned 🎉 → OOD 100%,v6.0 "recipe 完整"
+Day 7   (S5.l):        fmt_P 超-OOD 测试 → v6.1 "仍是 subskill lookup,受 aux 边界限"
+Day 8   (S5.m):        3-way × 2-scale wide → v6.3 "双 gate 独立乘积模型"
+```
+
+**每个版本迭代都被下一个实验 direct 验证或 falsify** ── 不是纸上思辨,而是"预测→跑→ discrepancy→refine"的反复。
+
+### v6.3 最终公式
+
+```
+OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
+
+  capacity_gate                = f(model size, task complexity)
+                                 决定 "IID subskill 学没学完"
+  subskill_transfer_within_aux = boolean "test H ∈ aux 训练分布 range 内"
+```
+
+**wide_O 5M 4 段刚好完美体现 2×2 gate grid**:
+
+|  | aux 覆盖 ON | aux 覆盖 OFF |
+|---|---:|---:|
+| capacity ON(5M）| **100 / 100 / 86%**（IID/BELOW/NEAR）| **4%**（FAR）|
+| capacity OFF(0.79M）| 23-73%(部分 unlock)| 1% |
+
+两 gate 独立,任一 fail 都会让 em 挂。
+
+### 4 个最深 finding
+
+**Finding 1:v3/v4 的"过度悲观"来自 axis 没列全**
+
+v3 说"格式 trick 用完",v4 说"scale 也不够" —— 事后看都错。真相是:只探索了"格式" 和 "scale" 两个 axis,漏了"训练数据组成(subskill supervision)" 这个巨大的 axis。fmt_M 一开始就让 OOD 2H per-step 从 2.5% → 70%,完全推翻 v3/v4 的"trick 用完/scale 不够"猜测。**Round 4 Q4.4 提炼的方法论 lesson：遇到"看似死胡同"时,先问"我有没有把 axis 列全"**。
+
+**Finding 2:fmt_O 100% 是"漂亮的 subskill lookup",不是"学到算法"**
+
+S5.k 我一度以为 fmt_O 学到了"跨 H 无限外推的通用算法"(v6.0)。**S5.l 的超-OOD 测试(H∈[51,100])直接反证** —— fmt_O 在 aux boundary 外崩到 2.5%,证明**学的仍是 subskill lookup,只是查表粒度从"整题 4 元组"降维到"4 个独立一元表"**。真"算法"要求 test 分布外也保持高精度,做不到。
+
+**Finding 3:val_loss ≠ em 可靠 predictor**
+
+wide_O 0.79M vs 5M val_loss 都 0.14,但 IID em 差 77pp(23% → 100%)。**在 subskill 层面的 discrete 精度上,val_loss flat 完全不代表 em flat**。之前我说"val_loss flat → em flat"是**错的**。这是 project 里学到的最贵的一个 methodology correction。
+
+**Finding 4:context alignment 是 c cascade 的直接 fix,但不 unlock aux 外的 OOD**
+
+S5.i fmt_N v2 里 c 卡在 21%(cascade tail transfer 失败)。S5.k fmt_O 用完整主任务 context 教 c → c 跳到 100%(**+79pp**)。这是 project 里最大的单点 improvement,直接印证 v5.3 里 (b) context alignment 条件。但 fmt_O 在 aux boundary 外仍崩(S5.l),说明 context alignment 只 unlock **capacity + aux 覆盖内的 OOD**,不是"通用算法 fix"。
+
+### 项目交付物
+
+**代码**
+- 8 种数据格式实现:`data/chickens_rabbits/prepare.py` 支持 A/B/C/D/L/M/N/O/P
+- `eval_cr.py` — 6 metrics × format-aware × parser sanity(20 case)
+- `train.py` — SFT loss_mask 支持(y=-1 + `ignore_index=-1`)
+- 15+ config,每个实验独立
+- 3 个 sanity script(inspect_cr.py 等)
+
+**Ckpts**(不入 git,占空间):
+- `out-cr-*` 共 14 个 ckpt,覆盖 0.79M/5M/14M × 8 fmt
+
+**版本管理**
+- 19 commits `349ec8e` → `639d5b1` on `hack/chickens-rabbits` branch
+- 已 push 到 `github.com/lvkexin559/nanoGPT`(fork,未污染 karpathy 上游)
+
+**认知产出**(~3000 行笔记)
+- §5 十六个 milestone(§5.1 - §5.16),每个含预测+实测+对账+根因
+- §11 Q&A 4 Rounds 21 题,3 个 punchline + 4 个方法论 lesson
+- 5 处白话前置概念(§5.6/§5.8/§5.10/§5.12/顶部 TL;DR)
+- §12 v6 评分卡 + §13 4 类后续延伸
+
+### LLM 启示 v6.3 版
+
+之前 §5.10-5.15 说 "GPT-4 靠 training data mix",v6.3 精细化为:
+
+- **Scale × Coverage 双维度乘积** —— GPT-4 = 极大 scale × 极广训练分布,**单扩一个只解决半个问题**
+- **Scale is not all you need** —— 0.79M 若 aux 对齐也能 unlock(fmt_O 原 setup 100%)
+- **Data coverage is not all you need** —— capacity 不足时 IID 都学不透(wide_O 0.79M IID 23%)
+- **两个独立 gate,乘积决定 em** —— 这跟"emergent algorithmic ability"的想象不符,更接近**极致 subskill lookup 表**
+
+**修辞 correction**:LLM 论文里"emergence" 通常暗示"从少量样本推出通用规律"。**本 project 的 finding 挑战这个说法** —— GPT-4 在算术上看似"emerge"的能力,更可能是**训练数据里 implicit 包含了每种 subskill 的极大分布覆盖**,查表边界正好落在几乎所有 test 之外。
+
+### 项目最重要的 4 个方法论 lesson(带走)
+
+**从 Round 1-4 punchline 里精选**:
+
+1. **loss 数学诊断**:起步 loss 偏离 ln(V) > 1.0 → 立刻怀疑初始化/pipeline(Round 1)
+2. **OOD 怀疑论**:看到 LM 拿 99% 别恭喜,先问 OOD split 测了没(Round 2)
+3. **conditional per-step**:考察 subskill transfer 要看 given prior correct 的 conditional,不看 marginal(Round 3)
+4. **技术价值 = f(应用场景)**:同一个 loss_mask 在 fmt_L 无用(4.5%),在 fmt_O 是关键(100%)——遇到死胡同先问 axis 列全没(Round 4)
+
+### 一段"给未来自己"的话
+
+> 这个 project 从**充满乐观 hypothesis**(v3 "数据格式可能撬开")到**充满悲观 verdict**(v4 "scale 也不够")到**看似完整的 recipe**(v6.0 "fmt_O 100% 学到算法")到**必须承认边界**(v6.1 "仍是 subskill lookup")到**双 gate 精确模型**(v6.3)。
+>
+> **8 天 13 实验里,没有一个 hypothesis 一次性说对**。每个"过度悲观"都被下一个实验 direct 证伪;每个"过度乐观"都被下一个 falsification test 精细化。
+>
+> **下次做 OOD 或 generalization 相关 project 时,先问自己**:
+> - subskill 拆解了没?每步 primitive operation 是什么?
+> - 数据分布覆盖 axis 列全了没?(格式、H 范围、subskill supervision、context alignment)
+> - capacity 是不是 IID 上限?怎么单独 test?
+> - **val_loss 别单独看**,一定配合 em / per-step / conditional per-step 一起判断
+>
+> **最深的 meta-lesson**:好的 project 不是"最终跑出最高分那个 run",是**每个变量都被独立 ablation 过、每次失败都精准定位到一个缺失条件**。fmt_O 100% 之所以有说服力,正因为前面 11 个"失败"每一个都定位了一个 recipe 缺件。
+
+---
+
 ## 参考
 
 - Lee et al. 2023, *Teaching Arithmetic to Small Transformers* — 反序数字、CoT 对算术任务的影响
 - Nye et al. 2021, *Show Your Work: Scratchpads for Intermediate Computation* — CoT 的早期论文
+- Power et al. 2022, *Grokking: Generalization Beyond Overfitting on Small Algorithmic Datasets* — 提到但未实测的 phase transition 现象(v6.3 视角下:grokking 可能对应"capacity 打开 + implicit aux 分布覆盖")
 - nanoGPT 自带 [`data/shakespeare_char/prepare.py`](../nanoGPT/data/shakespeare_char/prepare.py) — char-level 自定义 tokenizer 的参考实现
 - nanoGPT 自带 [`config/train_shakespeare_char.py`](../nanoGPT/config/train_shakespeare_char.py) — 小模型配置的参考

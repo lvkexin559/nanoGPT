@@ -2537,7 +2537,7 @@ FAR(H=450):  rev_pad(4) = "0540"    ← informative bit 在 pos 4-5 但 char 集
 
 #### 新增产物
 - 新:`viz_attention.py`(~120 行,手动 attention replay + ASCII bar,不依赖 matplotlib)
-- commit `_HASH_TODO_`
+- commit `1f71fb1` ✅ 2026-07-07 晚（exp(mech-interp): S5.s attention viz — diffuse in IID too, MLP is the mechanism）
 
 ---
 

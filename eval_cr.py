@@ -267,17 +267,33 @@ def predict_one(model, encode, decode, prompt: str, max_new_tokens: int,
 # Section 6 · Batch evaluation on one split
 # ---------------------------------------------------------------------------
 
+def constraint_verifier(H: int, F: int, c_pred: int, r_pred: int) -> bool:
+    """Check if (c_pred, r_pred) satisfies the chickens-and-rabbits system:
+       c + r = H  and  2c + 4r = F.
+    Since (H, F) determines a unique (c, r), passing this verifier is
+    mathematically equivalent to em=True (no false positives for this task).
+    Used for test-time compute (best-of-N sampling)."""
+    return (c_pred + r_pred == H) and (2 * c_pred + 4 * r_pred == F)
+
+
 def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
                n: int, seed: int, max_new_tokens: int, device: str,
                temperature: float, top_k: int, show_samples: int = 0,
-               name: str = "split"):
+               name: str = "split", best_of_n: int = 1):
     """Evaluate one split (IID or OOD). Returns a metrics dict.
 
+    If best_of_n > 1: sample N times per prompt with temperature > 0 and top_k,
+    then pick the first sample whose parsed (c, r) satisfies the constraint
+    verifier c+r=H and 2c+4r=F. If no sample passes verifier, use the first
+    sample as fallback. This is test-time compute / verifier-guided BoN.
+
     Metrics:
-      em            — exact-match: c_pred == c_gt AND r_pred == r_gt
-      digit_acc     — char-level match between predicted answer and GT answer
-      parse_fail    — fraction of outputs where parser couldn't find r or c
-      step_acc      — per-CoT-step accuracy (Q2.3-style "where did it break?")
+      em                  — exact-match: c_pred == c_gt AND r_pred == r_gt
+      digit_acc           — char-level match between predicted answer and GT
+      parse_fail          — fraction of outputs where parser couldn't find r or c
+      step_acc            — per-CoT-step accuracy
+      verifier_pass_rate  — [BoN only] % of prompts where ≥1 of N samples passed
+      avg_attempts        — [BoN only] average sample count until first pass
     """
     rng = random.Random(seed)
     parser = PARSERS[fmt]
@@ -285,6 +301,8 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     parse_fail = 0
     digit_total = 0
     digit_correct = 0
+    verifier_pass = 0
+    total_attempts = 0
 
     step_keys = ["two_h", "D", "r", "c"] if fmt in ("B", "D", "M", "N", "L", "O", "P") else ["c", "r"]
     step_correct = {k: 0 for k in step_keys}
@@ -293,16 +311,43 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     for i in range(n):
         H, F, c_gt, r_gt = gen_sample(h_min, h_max, rng)
         prompt = build_prompt(H, F, fmt)
-        gen = predict_one(model, encode, decode, prompt, max_new_tokens,
-                          device, temperature, top_k)
-        first_line = gen.split("\n")[0]
+
+        # === Best-of-N sampling with verifier ===
+        # Try up to `best_of_n` samples; return first one that passes the
+        # constraint verifier. If none passes, fallback to the first sample.
+        picked_first_line = None
+        picked_result = None
+        attempts_used = 0
+        first_line_fallback = None
+        first_result_fallback = None
+        for attempt in range(best_of_n):
+            gen = predict_one(model, encode, decode, prompt, max_new_tokens,
+                              device, temperature, top_k)
+            first_line = gen.split("\n")[0]
+            result = parser(first_line)
+            attempts_used = attempt + 1
+            if first_line_fallback is None:
+                first_line_fallback = first_line
+                first_result_fallback = result
+            if result and constraint_verifier(H, F, result["c"], result["r"]):
+                picked_first_line = first_line
+                picked_result = result
+                verifier_pass += 1
+                break
+        if picked_first_line is None:
+            # verifier didn't pass in N attempts; use first sample as fallback
+            picked_first_line = first_line_fallback
+            picked_result = first_result_fallback
+        total_attempts += attempts_used
+        first_line = picked_first_line
+        result = picked_result
+        # === End BoN block ===
 
         if samples_shown < show_samples:
             print(f"  [{name} #{i+1}] GT: H={H} F={F} c={c_gt} r={r_gt}")
-            print(f"               model: {first_line!r}")
+            print(f"               model: {first_line!r}  (attempt {attempts_used}/{best_of_n})")
             samples_shown += 1
 
-        result = parser(first_line)
         if not result:
             parse_fail += 1
             digit_total += 1  # tiny penalty placeholder so the rate isn't 100% by default
@@ -343,13 +388,20 @@ def eval_split(model, encode, decode, fmt: str, h_min: int, h_max: int,
     dig_pct = 100 * digit_correct / max(1, digit_total)
     pf_pct = 100 * parse_fail / n
     step_pct = {k: 100 * v / n for k, v in step_correct.items()}
+    verifier_pct = 100 * verifier_pass / n
+    avg_att = total_attempts / n
 
     print(f"  {name:8} n={n}  em={em_pct:5.1f}%  digit={dig_pct:5.1f}%  parse_fail={pf_pct:4.1f}%")
     step_line = ", ".join(f"{k}={v:.1f}%" for k, v in step_pct.items())
     print(f"           per-step: {step_line}")
+    if best_of_n > 1:
+        print(f"           BoN(N={best_of_n}): verifier_pass={verifier_pct:5.1f}%  "
+              f"avg_attempts={avg_att:.2f}")
     return {
         "em": em_pct, "digit": dig_pct, "parse_fail": pf_pct,
         "step": step_pct, "n": n, "h_range": [h_min, h_max], "fmt": fmt,
+        "verifier_pass": verifier_pct, "avg_attempts": avg_att,
+        "best_of_n": best_of_n,
     }
 
 
@@ -382,7 +434,19 @@ def main():
     p.add_argument("--ood-h-max", type=int, default=None)
     p.add_argument("--no-sanity", action="store_true",
                    help="skip parser sanity check (not recommended)")
+    p.add_argument("--best-of-n", type=int, default=1,
+                   help="test-time compute: sample up to N times per prompt "
+                        "and pick first one passing constraint verifier "
+                        "(c+r=H, 2c+4r=F). Default 1 = original greedy. "
+                        "Recommended N=10 with --temperature 0.7 --top-k 10 "
+                        "for stochastic sampling.")
     args = p.parse_args()
+
+    # If best_of_n > 1 but temperature/top_k still greedy, warn user
+    if args.best_of_n > 1 and args.temperature < 0.1:
+        print(f"[warn] best-of-n={args.best_of_n} but temperature={args.temperature} "
+              f"is near-greedy — all N samples will be nearly identical. "
+              f"Recommend --temperature 0.7 --top-k 10 for meaningful BoN.")
 
     if not args.no_sanity:
         sanity_check_parsers()
@@ -428,6 +492,7 @@ def main():
             args.n, args.seed,
             args.max_new_tokens, args.device, args.temperature, args.top_k,
             show_samples=args.show_samples, name="val_iid",
+            best_of_n=args.best_of_n,
         )
     if args.split in ("ood", "both"):
         print(f"\n[ood]  H in [{ood_h_min}, {ood_h_max}]")
@@ -436,6 +501,7 @@ def main():
             args.n, args.seed + 1,
             args.max_new_tokens, args.device, args.temperature, args.top_k,
             show_samples=args.show_samples, name="val_ood",
+            best_of_n=args.best_of_n,
         )
 
     print()

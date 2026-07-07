@@ -2356,6 +2356,107 @@ v4  200k n_train   125    44   100.0% ⭐  ▮▮▮▮▮▮▮▮▮▮▮ 全
 
 ---
 
+### 5.21 · S5.q Grokking 试验(Grok-A):Bear + IID 反降(2026-07-07 傍晚)
+
+> **动机**:v6.5 double gate 加固后,只剩 FAR [201, 500] 未 unlock(6.5% noise floor)。**Grokking 是 paradigm 内唯一可能撬开"跨 aux 边界外推"的路径**。参考 Power 2022, Nanda 2023,尝试 weight_decay 0.5 + max_iters 100k。
+
+**Setup**:wide_O v4 baseline + `weight_decay 0.1 → 0.5` + `max_iters 20k → 100k`,其他一切完全一致。~36 min 训练。
+
+**结果 4 段**
+
+| 段 | v4 baseline | Grok-A(wd=0.5, 100k)| Δ |
+|---|---:|---:|---:|
+| IID [5,100] | 100% | **76.5%** | **-23.5pp** ⚠ |
+| BELOW [2,4] | 100% | 100% | 0 |
+| NEAR [101,200] | 100% | 91.5% | -8.5pp |
+| **FAR [201,500]** | 6.5% | **4.5%** | **-2pp** |
+
+**Bear 命中 + IID 反降**:Grokking 没触发 FAR unlock,而且**强正则化让 IID 从 100% 崩到 76.5%**。
+
+**诊断**:weight_decay 0.5 **太强**了,压制 memorize 能力但没 unlock algorithm learning —— **两头都做不好**。Nanda 2023 提过的"grokking is fickle" 直接印证 —— 正则化太弱不 grok,太强伤 IID,sweet spot 极窄。
+
+**Val_loss=0.1441**(跟 v4 的 0.1435 几乎一样),但 em 结构完全不同 —— **又一次 val_loss ≠ em 的教训**。
+
+**接受这次 Bear** —— 没深挖 wd=0.2/0.3 的 sweet spot。理由:即使找到 sweet spot,预期最好也就是 IID 恢复 90%+ 加 FAR 小幅提升,不改变 v6.5 结论。
+
+---
+
+### 5.22 · S5.r Test-time compute(BoN + verifier):paradigm 天花板 direct confirm(2026-07-07 晚)
+
+> **动机**:v6.5 定义了训练时的 3 axis(capacity × rep × aux 覆盖)。**推理时增算力(test-time compute)是唯一还没测的独立 axis**。用 constraint verifier + best-of-N sampling 测试:如果 model sample 分布里有正确答案的 mass,BoN 就能榨出来;如果分布 disjoint,BoN 无用。
+
+**Setup**:
+- ckpt:wide_O v4(不重训)
+- 每题 sample **N=10** 次,`temperature=0.7 + top_k=10`(stochastic sampling)
+- **Constraint verifier**:`c + r == H AND 2c + 4r == F`(数学上等价于 em=True,无 false positive)
+- **策略**:第一个 pass verifier 的 sample 作为答案;10 次全 fail 则 fallback 第一次 sample
+
+**代码改动**
+- `eval_cr.py` 加 `constraint_verifier()` 函数 + `--best-of-n / --temperature / --top-k` 参数
+- backward compat 100%(默认 N=1,行为等同 greedy)
+
+**关键新 metric**:
+- `verifier_pass`:多少题在 N 次内 pass verifier(≡ em,因为 verifier perfect)
+- `avg_attempts`:平均要几次 sample 才 pass(1.0 = 首次就 hit,10 = N 次全没 hit)
+
+**结果 4 段(wide_O v4, N=10)**
+
+| 段 | greedy em | **N=10 BoN em** | verifier_pass | **avg_attempts** |
+|---|---:|---:|---:|---:|
+| IID [5,100] | 100% | 100% | 100% | **1.00** |
+| BELOW [2,4] | 100% | 100% | 100% | **1.00** |
+| NEAR [101,200] | 100% | 100% | 100% | **1.00** |
+| **FAR [201,500]** | **6.5%** | **9.5%** | 9.5% | **9.21** |
+
+**核心诊断:model 分布跟正确答案 disjoint**
+
+- **IID/BELOW/NEAR**:`avg_attempts=1.00` —— **第一次 sample 就 hit correct**。model 输出分布**集中在正确答案附近**
+- **FAR**:`avg_attempts=9.21` —— **10 次几乎全跑完 N 上限,verifier_pass 仅 9.5%**。**190/200 题 sample 10 次全没 hit 到正解**
+
+**这说明:model 在 FAR 上的输出分布 disjoint —— 不是"低概率藏在 tail",是"分布跟正解不相交"**。**Test-time sampling 只能 exploit 已存在的分布 mass,不能创造新的**。
+
+**v6.5 → v6.5 final:补 corollary**
+
+原 v6.5:`OOD em ≈ capacity_gate × [ g(rep_per_sample) × boolean(H ∈ aux) ]`
+
+**v6.5 final(+ test-time corollary)**:
+
+```
+Test-time compute(推理时增算力,如 BoN + verifier)只能 exploit model
+已学的分布,不能突破训练分布 coverage 的 boundary。
+
+- IID / aux 覆盖内: BoN 无 boost(model 已经 confident correct,avg_attempts=1)
+- Aux 覆盖外(FAR): BoN 几乎无 boost(distribution disjoint,+3pp within noise)
+```
+
+**这跟 Wei et al. 2023 "Self-Consistency Improves CoT" 的核心 finding 完全同构**:
+- self-consistency 只在 base model **分布已 cover 到正解附近** 时 boost 精度
+- **Base model 从没见过 → BoN/self-consistency 都无用** —— **paradigm-level 硬边界**
+
+**深层 LLM 启示 v6.5 final**
+
+GPT-o1 / DeepSeek-R1 的 test-time scaling 之所以 work,不是"抽奖 magic",是因为 **base model 已经 seen 大量 reasoning traces**,sample 时能刷到正确路径。**base model 未见过的知识,test-time 无法凭空创造**。
+
+**v6.5 final 完整定义 4 层天花板**:
+```
+1. IID lookup 上限         → capacity_gate (v6.3)
+2. Aux 覆盖内 OOD 精度      → g(rep_per_sample) (v6.5)
+3. Aux 覆盖外 OOD 精度      → ~5-10% noise floor (v6.5)
+4. Test-time compute 突破   → 无效(仅 +3pp within noise, v6.5 final)
+```
+
+**边界 3 + 4 一起 = project 的 paradigm 天花板**。
+
+**Nice 副产物**:test-time BoN + constraint verifier 是**免费精度 boost**——但**只在 model 已经"会做"的题上有效**。**能力天花板由训练分布覆盖决定,不由推理策略决定**。
+
+**新增产物**
+- 改:`eval_cr.py` 加 `constraint_verifier()` + `--best-of-n` CLI 参数
+- 新:`config/train_cr_wide_5m_O_grok_a.py`(Grok-A 试验)
+- Ckpt(不入 git):`out-cr-wide-5m-O-grok-a/ckpt.pt`
+- commit `_HASH_TODO_`
+
+---
+
 ## 6 · S5：4 个 hack 子实验（按优先级）
 
 ### S5.a · CoT 中间步骤（强烈推荐做）

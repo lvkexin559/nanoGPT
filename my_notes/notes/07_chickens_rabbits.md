@@ -422,6 +422,8 @@ python eval_cr.py --ckpt out-cr-cot/ckpt.pt --ood-h-min 51 --ood-h-max 100
 | **L fmt_P full-mask** (对照实验，0.79M) | 100.0% | 100.0% | **100.0%**([21,50]) / **1.5%**([51,100]) | 100.0%/77.0% | **v6→v6.1 双重发现**：fmt_P 全 mask 在 [21,50] 也拿 100%(仅靠 aux 扩训练分布)但 [51,100] 崩到 1.5%——证明**mask 机制 + aux H 范围决定"subskill lookup 边界"**；**fmt_O 在 [51,100] 也只 2.5%**——之前认为 fmt_O 学"算法" 是过度乐观，实际学的是"subskill 组合的 lookup"，仍受 aux H 范围硬性限制，见 §5.15 |
 | **M fmt_D/N/O × 0.79M/5M wide** (H_train=[5,100], rev_width=4, aux [2,200]) | **100.0%**（5M O）| **100.0%**（5M O）| **86.0%** NEAR / **4.0%** FAR | 22.9%/18.7% | 🎉 **v6.2 → v6.3 双 gate 定型**：5M 让 wide_O IID 从 23% 一跃到 100%（**capacity gate confirmed**），但 FAR [201,500] 仍 4%（**aux boundary gate 独立于 capacity**）；wide_O 5M 4 段完美体现 2×2 gate grid：(cap=ON,aux=ON)=100%（IID/BELOW）,(cap=ON,aux=ON [101,200]⊂[2,200])=86%,(cap=ON,aux=OFF)=4%（FAR）；v6.3 公式：**OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**，见 §5.16 |
 | **N wide_O v2 depth 4×** (n_train=400k, 每 aux depth 62→250/H) | 100% | 100% | **96.5%** NEAR (+10.5pp) / 9% FAR | 25.6/22.9% | 🎯 **v6.3 → v6.4 refinement**：depth 4× 让 NEAR 从 86% → 96.5%（关闭 76% 的 gap），per-step 全 uniform 96.5% 再排除 rev_width 位级学习问题；saturation curve fits 3 点（62/86% → 250/96.5% → 1000/100%）有 **diminishing return**；v6.4 公式:**subskill_transfer_within_aux ≈ f(depth_per_H) × boolean(H∈aux)**，见 §5.17 |
+| **O wide_O v3 depth 8×** (n_train=800k, unique 500/H × rep 11) | 100% | 100% | **91.0%** NEAR / 5.5% FAR | 26.2/23.0% | 反直觉 dip:total exposure 5500 相同(vs v2)但精度反降 5.5pp,per-step 首次分化(2H=99%, c=92%),质疑 v6.4 单变量假设,见 §5.18 |
+| **P wide_O v4 rep 44** (n_train=200k, unique 125/H × rep 44) 🎯 | 100% | 100% | **100.0%** NEAR / 6.5% FAR | 26.2/21.9% | 🎯 **v6.4 → v6.5 refinement**：total exposure 5500 相同,但 v4(125×44)干到 100%,v3(500×11)只 91%,v2(250×22)96.5% —— **rep_per_sample 是主导变量,不是 total exposure**；rep 曲线:11→91%, 22→96.5%, 44→100% (saturation);v6.5 公式:**subskill_transfer ≈ g(rep_per_sample) × boolean(H∈aux)**，Chinchilla-style data×compute 平衡启示,见 §5.19 |
 | D + loss masking | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 | E 去掉 PE | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 
@@ -2079,6 +2081,107 @@ GPT-4 训练数据 **两层都拉满** —— 覆盖极广 + 每 slot depth 极�
 - 数据/ckpt(不入 git):`data/chickens_rabbits_wide_O_v2/`, `out-cr-wide-5m-O-v2/ckpt.pt`(val_loss=0.1436)
 - 新:`config/train_cr_wide_5m_O_v2.py`
 - commit `7b0c70d` ✅ 2026-07-07 中午（exp(depth): S5.n wide_O v2 depth 4x — v6.3 → v6.4 saturation curve）
+
+### 5.18 · S5.o wide_O v3 depth 8×：反直觉 dip（2026-07-07 下午）
+
+> **动机**:v6.4 saturation curve 预测 depth 500/H → 98-99%。**直接测**。
+
+**setup**:唯一变量 `n_train 400k → 800k`,depth 250/H → **500/H**,其他一切不变。
+
+**实测(反预测)**
+
+| 段 | v2(250/H)| **v3(500/H)** | Δ |
+|---|---:|---:|---:|
+| IID | 100% | 100% | 0 |
+| BELOW | 100% | 100% | 0 |
+| **NEAR** | **96.5%** | **91.0%** | **-5.5pp** ★ 反预测 |
+| FAR | 9% | 5.5% | -3.5pp |
+
+**per-step 首次分化**:v3 NEAR 上 2H=99%, D=94%, r=94%, c=92%(不再 uniform)。
+
+**Total exposure 一致但精度不同**:
+
+| | unique/H | rep/sample | total(uniq × rep) | NEAR em |
+|---|---:|---:|---:|---:|
+| v2 | 250 | 22 | 5500 | 96.5% |
+| v3 | 500 | 11 | 5500 | **91%**(反而降)|
+
+**Total exposure 一样但结果差 5.5pp** —— v6.4 单变量 f(depth per H) 假设**被挑战**。可能 rep 才是主导。
+
+**v3 val_loss=0.1436**(跟 v2 完全一致)—— 又一次 val_loss 无法预测 em。
+
+**新增产物**:`data/chickens_rabbits_wide_O_v3/`, `out-cr-wide-5m-O-v3/ckpt.pt`, `config/train_cr_wide_5m_O_v3.py`。commit 见下方 S5.p 合并 commit。
+
+---
+
+### 5.19 · S5.p wide_O v4:uniq × rep 3-way 对照 —— v6.4 → v6.5 "repetition is dominating"（2026-07-07 下午）
+
+> **动机**:S5.o v3 反直觉 dip(96.5% → 91%)。假设:**是否 rep(每张卡看的次数)才是主导变量,而不是 total exposure**?
+>
+> **直接测**:设计一个 total exposure 相同但**rep 更多 unique 更少**的 setup,看精度是否升。
+
+**setup**(**user-designed** ⭐):唯一变量 `n_train 400k → 200k`,每类 aux samples 50k → **25k**,每 H unique = **125**,rep/sample = **44**。Total exposure = 125 × 44 = **5500**(跟 v2 v3 一致)。
+
+**实测 3-way 对照(total exposure = 5500 三次都相同)**
+
+| 实验 | unique/H | **rep/sample** | Total | **NEAR em** | per-step 均匀性 |
+|---|---:|---:|---:|---:|---|
+| v2(S5.n)| 250 | 22 | 5500 | 96.5% | uniform(4×96.5%)|
+| v3(S5.o)| 500 | 11 | 5500 | 91.0% | 分化(99/94/94/92)|
+| **v4(S5.p)** | **125** | **44** | **5500** | **100%** 🎯 | **uniform(4×100%)** |
+
+**教科书级别的对照** —— total exposure 一致,rep 越多精度越高:
+```
+rep 11 → 91%
+rep 22 → 96.5%
+rep 44 → 100%   ★ saturation reached
+```
+
+**结论 v6.4 → v6.5:rep_per_sample 才是主导变量,不是 depth per H(unique)**。
+
+**v6.5 formulation**:
+
+```
+subskill_transfer_within_aux_range 
+  ≈ g(repetitions_per_sample) × boolean(H ∈ aux)
+
+其中 g(rep):
+  rep ~11:  ~91%
+  rep ~22:  ~96.5%
+  rep ~44+: ~100%       ← saturation
+  
+  unique_samples_per_H 只要"够覆盖 aux H 分布"就足够
+  (v4 里 125 unique 覆盖 199 种 H,平均每 H 得 0.63 张卡,仍达 100%)
+```
+
+**Total exposure 不是决定因素**;**rep** 是。
+
+**为什么 v3(rep 11)精度反而降**
+
+11 次 gradient update 不够"记住"每张卡的具体 pattern → model 对每 unique sample 学到的强度低 → 即使 unique 数多也 fill 不上。**subskill lookup 需要每张 pattern 有足够 gradient signal 强度**。
+
+**深层 LLM training 启示 v6.5**
+
+这个 finding 直接对应 **Chinchilla scaling law**(Hoffmann et al. 2022)的核心 insight —— **"data × compute 必须匹配,单扩 data 不加 compute 不 work"**。
+
+现在有 direct 3-点实验证据:
+
+- **同 compute,增 data → rep 减少 → 精度反而降**(v3 500×11)
+- **同 compute,减 data → rep 增加 → 精度反而升**(v4 125×44)
+- **平衡的 middle → 中等精度**(v2 250×22)
+
+**实践启示**:
+- 训 LLM 时,unique 数据量应该跟 compute 匹配,不是越多越好
+- 在 subskill 层面,**"记住 pattern"需要每 pattern 至少 40+ 次 gradient update**
+- 现代 LLM 巨大规模训练,是因为**同时** scale data 和 compute,不是单独 scale data
+
+**v6.5 加固 GPT-4 类比**:GPT-4 的能力 = **Scale × Coverage × 每 pattern 的重复次数** 三维度全部拉满。之前只讲两维度(Scale × Coverage),v6.5 补上第三维度(rep saturation)。
+
+**新增产物**
+- 新:`data/chickens_rabbits_wide_O_v4/`(200k n_train)
+- 新:`config/train_cr_wide_5m_O_v4.py`
+- 新:`out-cr-wide-5m-O-v4/ckpt.pt`(val_loss=0.1435)
+- commit `_HASH_TODO_`
 
 ---
 

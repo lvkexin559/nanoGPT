@@ -2457,6 +2457,90 @@ GPT-o1 / DeepSeek-R1 的 test-time scaling 之所以 work,不是"抽奖 magic",�
 
 ---
 
+### 5.23 · S5.s Attention pattern 可视化:**mechanism-level 诊断,推翻原 diffuse 假设**(2026-07-07 晚)
+
+> **动机**:§13 C-1 一直挂着 "attention pattern 可视化" TODO —— fmt_O/wide_O 在 FAR 上崩,到底是 (a)"attention 不知道该看哪"(diffuse → fix PE)还是 (b)"看对了但算错"(focused → fix RL/arch)?  ~40 行 hook + ASCII bar 就能诊断。
+
+**Method**:
+- 写 `viz_attention.py`(手动 replay attention,bypass flash attention 拿 weights)
+- 输出 ASCII bar 图(matplotlib install 失败,text 反而更 grep-friendly)
+- 关键 metric:
+  - `entropy_norm`(0 = 完全 focus,1 = 完全 uniform)
+  - `H_digit_mass`(attention 分配给 H 数字位置的比例)
+  - `peak/uniform`(peak attention 是 uniform 的多少倍)
+- 检测点:model 处理完 prompt 最后一个 token(准备 emit 2H)那一刻的 attention row
+
+#### 对照实验
+
+**跑了 2 个 ckpt × IID/FAR × 3 examples**:
+
+| Model | Layer | IID entropy | IID H_mass | FAR entropy | FAR H_mass |
+|---|---:|---:|---:|---:|---:|
+| **wide_O v4 5M** (6 layers) | 平均 | ~0.86 | ~0.24 | ~0.88 | ~0.22 |
+| **fmt_O 0.79M** (4 layers) | 平均 | (未跑) | (未跑) | ~0.92 | ~0.24 |
+
+**核心 finding**:
+- **两个模型架构不同**(4L vs 6L)、**参数量不同**(0.79M vs 5M)、**rev_width 不同**(3 vs 4)—— 但 attention pattern **高度相似**
+- **每层都是 DIFFUSE**(entropy 0.85-0.98)
+- **H_digit_mass 只 5-35%**(其他 65-95% 分散到 F、=、space、\n 等)
+- 最反直觉:**IID 上 attention 也 diffuse,但 em = 100%**
+
+#### 🎯 推翻原假设
+
+**原假设(§13 C-1)**:diffuse → "不知道该看哪" → fix PE(positional encoding)
+
+**推翻依据**:IID 上 attention 一样 diffuse,但 em = 100%。**说明 diffuse ≠ 不 work**。
+
+**新 mechanism 诊断**:
+
+```
+- Attention 都 diffuse(IID/FAR 都一样)
+- IID 上 diffuse attention + MLP 数值 lookup → 100% em
+- FAR 上 attention 一样 diffuse,但 MLP lookup 失效 → 6.5% em
+- 差别不在 attention,而在 MLP 学到什么
+```
+
+#### 更深 mechanism:**位置-数字联合 lookup**
+
+Reversed padded 数字的**信息位在 pos 移动**:
+
+```
+IID(H=50):   rev_pad(4) = "0500"[::-1] = "0050"[::-1] 
+             ↑ H 值 50 → "50" → zfill "0050" → reverse "0500"
+             informative bit 在 pos 3-4 附近
+
+FAR(H=250):  rev_pad(4) = "0520"    ← informative bit 在 pos 4-5
+FAR(H=450):  rev_pad(4) = "0540"    ← informative bit 在 pos 4-5 但 char 集合不同
+```
+
+**MLP 学的是"位置 × char → 输出"lookup**,不是"抽象数值 × 抽象操作"。IID 里 MLP 学到"pos X 是 char Y → 输出 Z"的具体 pattern;FAR 里位置/char 组合从没见过 → lookup 失败。
+
+**这是 v6.5 边界的 mechanism-level 解释** —— 不是"model 太小"或"scale 不够",是**MLP 学到的表示本质上是 lookup table**,数据分布外的 position×char 组合不在 table 里。
+
+#### v6.5 fix 方向修正
+
+| Fix 方向 | 原判断(§13)| **v6.5 mechanism 视角** |
+|---|---|---|
+| B1 fix PE | 可能(diffuse 假设)| **NO** —— attention 已经 diffuse work 好 in IID |
+| B2 RL outcome reward | 可选 | **YES** —— 强制 MLP 学"抽象数值算法"而不是位置-char lookup |
+| B3 fix architecture | 可选 | **NO** —— 架构结构 OK,MLP 也 OK |
+| 数据分布覆盖(aux 扩) | v6.5 直接推论 | **YES** —— 让 MLP 见过 FAR 的 pos×char 分布 |
+| Tool use | 一直都是选项 | **YES** —— 承认 MLP 不擅长算术,借助工具(GPT-4 code interpreter 原理)|
+
+**核心 refinement**:v6.5 aux 覆盖 gate 的 mechanism = "MLP lookup table 里有没有 test 位置×char 的 mapping"。**不是 attention 问题,是 MLP 表示问题**。
+
+#### Paper-level 价值的 finding
+
+这跟 mechanistic interpretability 文献里的 **"MLP as key-value memory"**(Geva et al. 2020)一致 —— transformer 的 MLP layer 更接近 lookup table 而不是 differentiable compute unit。**Attention 是分发信号,MLP 是记忆匹配**。
+
+我们在鸡兔同笼 toy setup 上看到了这个机制的直接证据:**同样 diffuse attention,只是 MLP 里的 lookup table 覆盖不同**。
+
+#### 新增产物
+- 新:`viz_attention.py`(~120 行,手动 attention replay + ASCII bar,不依赖 matplotlib)
+- commit `_HASH_TODO_`
+
+---
+
 ## 6 · S5：4 个 hack 子实验（按优先级）
 
 ### S5.a · CoT 中间步骤（强烈推荐做）

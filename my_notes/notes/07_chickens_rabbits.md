@@ -4,9 +4,95 @@
 >
 > 上游：[`../00_learning_plan.md`](../00_learning_plan.md) · 代码：[`../nanoGPT/`](../nanoGPT/) · 通用 hack 笔记：[`./05_hack.md`](./05_hack.md)
 >
-> 预计时长：**7-8 小时**（可拆 2-3 个晚上）
+> 实际时长：**8 天(2026-06-24 → 2026-07-07),16 组实验,~3400 行笔记,27 commits**（原估 7-8 小时,实际严重超出因为 v3 → v6.5 迭代扩展）
 >
-> 前置依赖：建议先做完 Phase 3（精读 train.py），不然 S5.b 改 loss masking 会比较盲。
+> 前置依赖：建议先做完 Phase 3（精读 train.py），不然 loss masking 会比较盲。
+
+---
+
+## 📖 目录
+
+### 🚀 3 秒找到最想看的
+
+- [**§14 · Grand Summary(v6.3 收官)**](#14--grand-summary--project-收官v632026-07-06) — 8 天 arc 一段话总结,给"未来的自己"看
+- [**顶部 TL;DR:术语速查 + 4 问 4 答**](#tldr--术语速查--4-问-4-答核心s5-系列收口2026-07-01-自答验证-grok) — 全项目术语字典 + 21 题 Q&A 的核心 5 题
+- [**§5.20 · 4 次 wide_O 完整对照表**](#520--4-次-wide_o-完整对照表所有段--所有指标2026-07-07-下午archive) — 查具体数字用
+- [**§12 · v6 评分卡**](#12--评分卡phase-5-毕业v6-版本) — Phase 5+ 毕业指标
+
+### 📋 项目蓝图(§0-§4)
+
+- [§0 为什么这实验值得做](#0--为什么这是个比莎士比亚-hack-更好的实验)
+- [§1 路线图(mermaid)](#1--路线图)
+- [§2 S1 数据格式设计](#2--s1数据格式设计最核心的决策)
+- [§3 S2 prepare.py + tokenizer](#3--s2preparepy--自定义-tokenizer)
+- [§4 S3 模型 + 训练 baseline](#4--s3模型--训练-baseline)
+
+### 🔬 §5 · S4 eval 框架 + S5 实验时序(**主体**)
+
+#### 早期(S1-S5.a + 扩 H)—— baseline + 探索起步
+
+- [§5.1-5.2 eval 框架](#51-为什么必须单独写-eval)
+- [§5.3 实验结果对比表](#53-实验结果n200split贪心eval_crpy-跑出) —— **主对比表**(12 行)
+- [§5.4 S4 落地小结](#54--s4-落地小结2026-06-25-傍晚-milestone)
+- [§5.5 扩 H 实验 → 查表边界硬](#55--扩-h-实验把查表论加固到-v22026-06-25-晚跑出)
+
+#### 数据格式 axis(§5.6-5.7)—— v3 "trick 用完"
+
+- [§5.6 fmt_C 反序数字](#56--s5c-反序数字fmt_c-实验2026-06-29-上午) — OOD em 0%,shape ↑ content 0
+- [§5.7 fmt_D 反序+CoT](#57--s5d-反序--cotfmt_d-实验2026-06-29-下午) — OOD em 3.5%,**v3 "trick 用完"**
+
+#### 模型规模 axis(§5.8-5.9)—— v4 "scale 也不够"
+
+- [§5.8 5M scale up](#58--s5e-扩模型规模-5mv3--v4-scale-也不够2026-07-01-上午) — 6× scale, zero OOD gain
+- [§5.9 14M scale up](#59--s5f-扩模型规模-14mv4-加固判决2026-07-01-中午) — 18× scale, 三点趋势线 flat → **v4 加固**
+
+#### Multi-task subskill(§5.10-5.13)—— v5.0 → v5.3
+
+- [§5.10 fmt_M 1-aux](#510--s5g-换-training-signal-fmt_m-multi-taskv4--v5-training-signal--compositional-coverage2026-07-01-下午) — 独立"乘 2"让 OOD 2H per-step **2.5%→70%!** → **v5.0**
+- [§5.11 fmt_N v1 全 4 aux(浅)](#511--s5h-fmt_n-全-4-subskillv5-direct-falsification-test--v512026-07-01-傍晚) — 4 步都 22% → **v5.1 depth 必要**
+- [§5.12 fmt_N v2 加 depth](#512--s5i-fmt_n-v2-加-depthv51-direct-depth-test--v52-transfer-效率不均2026-07-01-晚) — 3/4 unlock 74%,c 卡 21% → **v5.2**
+- [§5.13 fmt_L loss-mask alone](#513--s5j-fmt_l-loss-mask-sftv52-direct-falsification-test--v532026-07-02-下午) — 4.5%(反跌!)→ **v5.3 需 (a)+(b) 双必要**
+
+#### **fmt_O 突破(§5.14)**—— v6.0 完整 recipe 🎉
+
+- [§5.14 fmt_O context-aligned 🎉](#514--s5k-fmt_o-context-alignedv53-super-bull--v6-完整-recipe-2026-07-02-傍晚) — **OOD em 100%!** context alignment 是最后一片拼图
+
+#### 边界探索(§5.15-5.16)—— v6.0 → v6.3
+
+- [§5.15 fmt_P + super-OOD 测试](#515--s5l-fmt_p-mask-role-对照--超-ood-testv6--v61-仍是-subskill-lookup2026-07-03-上午) — fmt_O 在 [51,100] 也崩到 2.5% → **v6.1 "subskill lookup"**
+- [§5.16 3-way × 2-scale wide 大对照](#516--s5m-3-way--2-scale-wide-大对照v62--v63-双-gate-模型2026-07-03-下午) — wide_O 5M IID 100% NEAR 86% FAR 4% → **v6.3 双 gate 模型**
+
+#### Depth × Rep 精细化(§5.17-5.20)—— v6.3 → v6.5
+
+- [§5.17 wide_O v2 depth 4×](#517--s5n-wide_o-v2-depth-4v63--v64-subskill-saturation-curve2026-07-07-中午) — depth 62→250/H NEAR 86%→96.5% → **v6.4 saturation curve**
+- [§5.18 wide_O v3 depth 8× (反直觉 dip)](#518--s5o-wide_o-v3-depth-8反直觉-dip2026-07-07-下午) — 500/H 反降到 91%,per-step 首次分化
+- [§5.19 wide_O v4 rep 44 ⭐](#519--s5p-wide_o-v4uniq--rep-3-way-对照--v64--v65-repetition-is-dominating2026-07-07-下午) — **NEAR 100%!** total 5500 相同下 rep 主导 → **v6.5**
+- [§5.20 4 次 wide_O 完整对照 archive](#520--4-次-wide_o-完整对照表所有段--所有指标2026-07-07-下午archive) — 查表用
+
+### 📚 参考章节(§6-§13)
+
+- [§6 S5 4 hack 概述](#6--s54-个-hack-子实验按优先级)
+- [§7 文件清单](#7--文件清单要新建改的)
+- [§8 git commit log](#8--git-分支与版本管理) — **19 个 commit hash 查询**
+- [§9 验证 rules](#9--验证mandatory-verification-规则要求)
+- [§10 时间陷阱](#10--时间陷阱--别踩的坑)
+- [§11 Q&A 4 Rounds 21 题](#11--消化-qa--round-1s2s3-baseline--round-2s5a-cot--round-3v51v52-概念--round-4v6-收官-grand-review) — Round 1(6)+Round 2(6)+Round 3(4)+Round 4(5)
+
+### 🎓 收官
+
+- [§12 v6 评分卡](#12--评分卡phase-5-毕业v6-版本)
+- [§13 后续延伸(4 类候选)](#13--后续延伸可选-v6-视角下的下一步)
+- [§14 Grand Summary(v6.3 定型)](#14--grand-summary--project-收官v632026-07-06)
+- [参考](#参考)
+
+### 🎯 6 个"必读"入口(按 grokking 深度排序)
+
+1. **顶部 TL;DR** — 5 分钟全项目术语速查
+2. **§14 Grand Summary** — 10 分钟全 arc 总结
+3. **§5.3 主对比表** — 12 行数字 side-by-side
+4. **§5.20 4-way wide_O archive** — v6.5 关键 3 数据点对照
+5. **§11 Round 4 Q&A(5 题)** — 方法论 meta-lessons
+6. **§5.14 fmt_O(🎉)** — project 最漂亮的实验(OOD em 100%)
 
 ---
 

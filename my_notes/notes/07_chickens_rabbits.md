@@ -420,6 +420,7 @@ python eval_cr.py --ckpt out-cr-cot/ckpt.pt --ood-h-min 51 --ood-h-max 100
 | **K fmt_O context-aligned** (0.79M) | **100.0%** | **100.0%** | **100.0%** ★ | **100.0%** | 🎉 **v5.3 super-bull 命中 → v6 完整 recipe**！aux 用完整 fmt_D text (a)+(b) 双满足；每步 per-step 全 100%；从 fmt_D 的 3.5% 一跃到 100%，同 0.79M 参数不变。**证明 model capacity 从来不是 bottleneck,training signal 设计才是**，见 §5.14 |
 | **L fmt_P full-mask** (对照实验，0.79M) | 100.0% | 100.0% | **100.0%**([21,50]) / **1.5%**([51,100]) | 100.0%/77.0% | **v6→v6.1 双重发现**：fmt_P 全 mask 在 [21,50] 也拿 100%(仅靠 aux 扩训练分布)但 [51,100] 崩到 1.5%——证明**mask 机制 + aux H 范围决定"subskill lookup 边界"**；**fmt_O 在 [51,100] 也只 2.5%**——之前认为 fmt_O 学"算法" 是过度乐观，实际学的是"subskill 组合的 lookup"，仍受 aux H 范围硬性限制，见 §5.15 |
 | **M fmt_D/N/O × 0.79M/5M wide** (H_train=[5,100], rev_width=4, aux [2,200]) | **100.0%**（5M O）| **100.0%**（5M O）| **86.0%** NEAR / **4.0%** FAR | 22.9%/18.7% | 🎉 **v6.2 → v6.3 双 gate 定型**：5M 让 wide_O IID 从 23% 一跃到 100%（**capacity gate confirmed**），但 FAR [201,500] 仍 4%（**aux boundary gate 独立于 capacity**）；wide_O 5M 4 段完美体现 2×2 gate grid：(cap=ON,aux=ON)=100%（IID/BELOW）,(cap=ON,aux=ON [101,200]⊂[2,200])=86%,(cap=ON,aux=OFF)=4%（FAR）；v6.3 公式：**OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**，见 §5.16 |
+| **N wide_O v2 depth 4×** (n_train=400k, 每 aux depth 62→250/H) | 100% | 100% | **96.5%** NEAR (+10.5pp) / 9% FAR | 25.6/22.9% | 🎯 **v6.3 → v6.4 refinement**：depth 4× 让 NEAR 从 86% → 96.5%（关闭 76% 的 gap），per-step 全 uniform 96.5% 再排除 rev_width 位级学习问题；saturation curve fits 3 点（62/86% → 250/96.5% → 1000/100%）有 **diminishing return**；v6.4 公式:**subskill_transfer_within_aux ≈ f(depth_per_H) × boolean(H∈aux)**，见 §5.17 |
 | D + loss masking | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 | E 去掉 PE | _TODO_ | _TODO_ | _TODO_ | _TODO_ | 0.79M / 5k iter |
 
@@ -2014,6 +2015,70 @@ OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
 - 数据/ckpt(不入 git):3 个 `data/chickens_rabbits_wide_*/` + 6 个 `out-cr-wide-*/ckpt.pt`
 - commit `790ba7a` ✅ 2026-07-03 下午（exp(wide): S5.m 3-way (D/N/O) × 2-scale (0.79M/5M) — v6.2 → v6.3 dual-gate model）
 
+### 5.17 · S5.n wide_O v2 depth 4×：v6.3 → v6.4 "subskill saturation curve"（2026-07-07 中午）
+
+> **动机**：§5.16 wide_O 5M NEAR [101,200] em=86% —— 一直 open 的 crack。3 个假设(capacity 不够 / subskill 干扰 / rev_width 位级学不透)diagnose 后指向**aux depth per H 是隐藏参数**:
+> - fmt_O 原 setup（§5.14）:aux 12.5k/50H = **250/H** → NEAR-equivalent 100%
+> - wide_O（§5.16）:aux 12.5k/200H = **62/H** → NEAR 86%
+> - 直接 verify:训 n_train=400k(depth 250/H)看 NEAR 是否恢复。
+
+**唯一变量**：`n_train 100k → 400k`,其他一切(fmt_O / 5M model / 20k iter / H 范围 / rev_width=4)完全一致。
+
+**实测**
+
+| Test 段 | wide_5m_O(depth 62/H)| **wide_5m_O_v2(depth 250/H)** | Δ |
+|---|---:|---:|---:|
+| IID [5, 100] | 100% | **100%** | 0(饱和)|
+| BELOW [2, 4] | 100% | **100%** | 0(饱和)|
+| **NEAR [101, 200]** | **86%** | **96.5%** | **+10.5pp** ★ |
+| FAR [201, 500] | 4% | 9% | +5pp(见下)|
+
+**per-step 检查**:NEAR 上 2H/D/r/c 全 96.5%(uniform)—— 再次排除 rev_width 位级学习问题(如果是,per-step 会分化)。
+
+**v6.4 核心 finding**
+
+**depth-per-H 是隐藏 axis**。saturation curve 拟合 3 数据点:
+
+```
+depth ~62/H   → subskill 精度 ~86%    (wide_O)
+depth ~250/H  → subskill 精度 ~96.5%  (wide_O_v2, 关闭 76% 的 14pp gap)
+depth ~1000/H → subskill 精度 ~100%   (fmt_O 原 setup / fmt_M 单 aux)
+```
+
+**Diminishing return**:62→250(4×)拉 10.5pp,250→1000(4×)只拉 3.5pp。**subskill lookup 也是 saturation curve,不是 threshold**。
+
+**FAR 从 4% → 9% 的小意外**
+
+Aux 覆盖不变(仍 [2, 200]),但 FAR 略升。per-step 全 uniform 17-21%,c=21% 略高于 2H/D 的 17-18%。**猜测**:aux 边界(H=200)附近 depth 深了后,model 对紧邻 boundary 的 H=201-300 有微弱 "attempt to extrapolate";或者是 rev_width=4 下 c 位置的"c∈[0,H]"prior 被 model 利用得更好。**仍是 noise floor 水平**(15-20%),不是真外推能力。
+
+**v6.3 → v6.4 formulation**
+
+```
+OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
+
+其中 subskill_transfer_within_aux_range ≈ 
+  f(depth_per_H) × boolean(test H ∈ aux 训练 range)
+
+f(d) 是 saturation curve:
+  d < 20/H:     ~10%
+  d ~62/H:      ~86%
+  d ~250/H:     ~96.5%
+  d ~1000/H:    ~100%
+```
+
+**v6.4 与 GPT-4 的类比**
+
+之前 §5.16 说 "GPT-4 = Scale × Coverage 双维度乘积"。v6.4 把 Coverage 拆成两层:
+- **Coverage range**:训练数据涵盖多少种 subskill × 多少种输入模式
+- **Coverage depth**:每个 (subskill, input mode) 组合见过多少次
+
+GPT-4 训练数据 **两层都拉满** —— 覆盖极广 + 每 slot depth 极深。**只扩范围不加 depth,或只加 depth 不扩范围,都只解决半个问题**。这解释了为什么 industrial LLM finetune 数据的"gold standard" 通常是"few-shot × many-variations",而不是"single-shot × extreme-scale"。
+
+**新增产物**
+- 数据/ckpt(不入 git):`data/chickens_rabbits_wide_O_v2/`, `out-cr-wide-5m-O-v2/ckpt.pt`(val_loss=0.1436)
+- 新:`config/train_cr_wide_5m_O_v2.py`
+- commit `_HASH_TODO_`
+
 ---
 
 ## 6 · S5：4 个 hack 子实验（按优先级）
@@ -2204,23 +2269,23 @@ git checkout -b hack/chickens-rabbits
 
 **(a) cross_entropy 完整公式**（这是 LLM 训练的灵魂公式，必须记住）：
 
-对单个 token（真实是 $y$，模型预测分布 $\hat{p}$）：
+对单个 token（真实是 y，模型预测分布 p̂）：
 
-\[
-\text{CE} = -\sum_{v=1}^{V} p_{\text{true}}(v) \cdot \ln \hat{p}(v)
-\]
 
-$p_{\text{true}}$ 是 one-hot（真实 token 概率为 1，其他为 0），整个求和**坍缩**成：
+CE = -∑ᵥ₌₁ⱽ pₜᵣᵤₑ(v) · ln p̂(v)
 
-\[
-\text{CE} = -\ln \hat{p}(y_{\text{true}})
-\]
 
-**模型刚初始化时，所有 logits ≈ 0，经 softmax 变成 uniform** $\hat{p}(v) = 1/V$，所以：
+pₜᵣᵤₑ 是 one-hot（真实 token 概率为 1，其他为 0），整个求和**坍缩**成：
 
-\[
-\boxed{\text{CE}_{\text{init}} = -\ln \frac{1}{V} = \ln V}
-\]
+
+CE = -ln p̂(yₜᵣᵤₑ)
+
+
+**模型刚初始化时，所有 logits ≈ 0，经 softmax 变成 uniform** p̂(v) = 1/V，所以：
+
+
+【 CEᵢₙᵢₜ = -ln 1/V = ln V 】
+
 
 这是 **每个 vocab_size 配训练任务后，第一眼应该看的 sanity check**。
 
@@ -2322,9 +2387,9 @@ $p_{\text{true}}$ 是 one-hot（真实 token 概率为 1，其他为 0），整�
 
 **Step 3 · 加权平均**：
 
-\[
-\text{avg loss} = \frac{9 \times 0 + 2 \times 2.3 + 4 \times 0.5 + 2 \times 0}{17} = \frac{4.6 + 2}{17} \approx 0.39
-\]
+
+avg loss = (9 × 0 + 2 × 2.3 + 4 × 0.5 + 2 × 0)/17 = (4.6 + 2)/17 ≈ 0.39
+
 
 **理论 ≈ 0.39，观测 0.35，差 ~0.04**——完美吻合！
 

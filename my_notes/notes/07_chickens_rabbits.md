@@ -2646,7 +2646,7 @@ MLP 里:
 
 #### 新增产物
 - 改:`viz_attention.py` 加 `--per-head` mode + `analyze_per_head()` + `per_head_report()`
-- commit `_HASH_TODO_`
+- commit `3d0821f` ✅ 2026-07-07 晚（exp(mech-interp): S5.t head-level split — L2H5 是 97.6% H attender on IID）
 
 ---
 

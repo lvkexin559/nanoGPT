@@ -2650,6 +2650,99 @@ MLP 里:
 
 ---
 
+### 5.25 · S5.u Ablation study:**推翻"L2H5 essential" 假设,发现 layer-level 分工**（2026-07-07 晚）
+
+> **动机**:§5.24 发现 L2H5 attention 97.6% 集中在 H digits(强"H reader" pattern)。**直接因果 test**:ablate L2H5 IID em 会崩吗?如果是 essential,应从 100% → 0-30%。
+
+**Method**:在 `eval_cr.py` 加 `--ablate-head "L,H"` flag,通过 `register_forward_pre_hook` 在 `c_proj` 前 zero out specific head 的 channels(等价 disable 该 head 的 output)。
+
+Sanity 验证:hook 触发,head 5 的 output norm 从 14.87 → 0.00 ✓
+
+#### Progressive ablation 结果(wide_O v4 5M,IID [5,100])
+
+| Ablation | IID em | 2H | D | r | c |
+|---|---:|---:|---:|---:|---:|
+| baseline | 100% | 100% | 100% | 100% | 100% |
+| L2H5 alone | **100%** | 100% | 100% | 100% | 100% |
+| L2H5 + L3H3 | 100% | 100% | 100% | 100% | 100% |
+| L2H5 + L3H3 + L3H4 | 100% | 100% | 100% | 100% | 100% |
+| **Top-5 H attenders**(L2H3+L2H5+L3H3+L3H4+L3H5)| **100%** | 100% | 100% | 100% | 100% |
+| **L2 whole (all 8 heads)** | **0%** ★ | **100%** | **2.5%** | 2.5% | 3.5% |
+| **L3 whole (all 8 heads)** | **9.5%** | 99.5% | 13.5% | 13.5% | 10% |
+| **L2 + L3 whole (16 heads)** | **0.5%** | **72%** | 2% | 1.5% | 4% |
+
+#### 3 个关键 finding
+
+**1. L2H5 不是 essential H reader** — head-level 冗余极高
+
+Top 5 H attenders(H_mass 52-97%)全 zero 后 IID em 仍 **100%**。**§5.24 的"L2H5 是 H reader"是 correlation-based observation,不是 causal role**。
+
+**2. Layer-level 分工才是真 function 单位**
+
+Ablate 整个 L2 后:
+- **2H per-step 保持 100%** ← "H → 2H" 主要在 **L0/L1** 就完成
+- **D per-step 掉到 2.5%** ← **L2 是 D = F − 2H 的关键 subskill 层!**
+- r/c cascade fail 到 2-3.5%
+
+Ablate 整个 L3:D/r 降到 13-14%,但 2H 仍 99.5% ← **L3 补 D/r 但不管 2H**。
+
+**3. Subskill 分层清晰(CoT step-wise processing 直接观察)**
+
+```
+L0/L1: 乘 2("H → 2H")  — 最简单 subskill 浅层就够
+L2:    减法(D = F - 2H) ★ 关键层
+L3:    除法(r = D / 2)  补充层
+L4/5:  输出准备
+```
+
+`2H` 是最鲁棒的:L2+L3 双层 ablate 后 2H 仍 72%,其他 subskill 全崩 2-4%。**"乘 2" mapping 已 encode 在 embedding + L0/L1**。
+
+#### §5.24 → §5.25 refinement:correlation ≠ causation
+
+**§5.24**:L2H5 attention 97.6% 在 H digits → **推断** L2H5 是 H reader
+**§5.25**:L2H5 单独 ablate 无影响 → **反证** attention pattern 反映"信息路由" 但不代表"causal function"
+
+**方法论 lesson**:mechanistic interpretability 里,**"看到 head attend 到某 pattern" ≠ "这个 head 承担该 function"**。真正的因果要靠 ablation 才能测出。
+
+#### 与 mechanistic interpretability 文献 alignment
+
+这跟 Elhage et al. 2022 *Framework for Transformer Circuits* 观察一致:
+- Transformer 用 **residual stream** 作为主要信息通道
+- **Layer-specific circuit** 承担 subskill(每层处理不同抽象层的运算)
+- **Head-level 内部冗余极高**,per-layer sub-networks 各司其职
+
+我们在 5M 鸡兔同笼 toy 上直接观察到这个 pattern —— **paper 级实证**。
+
+#### v6.5 mechanism 3 层完整版
+
+```
+macro (v6.5):     aux 覆盖内 unlock,覆盖外崩
+                       ↑
+head-level (§5.24): 有 focused H-attender (L2H5=97.6%) 但 冗余
+                       ↑
+layer-level (§5.25): L2 = D subskill 层,L3 = r subskill 层
+                       ↑
+真 bottleneck:      每层 MLP 只覆盖 IID (pos, char) 组合
+```
+
+#### Fix 方向 final refinement
+
+| 方向 | v6.5 macro | v6.5 micro (§5.23-5.24) | **v6.5 layer-level (§5.25)** |
+|---|---|---|---|
+| B1 fix PE / attention arch | ❌ | ❌ attention healthy | ❌ head redundant 说明 arch ample |
+| B2 RL outcome reward | ✅ | ✅ target MLP lookup | ✅ **每层 MLP 都要 target**,特别 L2/L3 |
+| B3 fix architecture | ❌ | ❌ | ❌ |
+| 数据分布覆盖 | ✅ | ✅ | ✅ **每 CoT step 都要有 FAR 覆盖** |
+| Tool use | ✅ | ✅ | ✅ 替代 L2/L3 里的 subskill lookup |
+
+**核心 refine**:B2 RL 的 target 是**每层 MLP**(尤其 L2 D subskill 层)—— 不能只 target output layer,要 layer-wise fine-grained reward。
+
+#### 新增产物
+- 改:`eval_cr.py` 加 `--ablate-head "L,H;L,H;..."` 支持多头 ablation
+- commit `_HASH_TODO_`
+
+---
+
 ## 6 · S5：4 个 hack 子实验（按优先级）
 
 ### S5.a · CoT 中间步骤（强烈推荐做）

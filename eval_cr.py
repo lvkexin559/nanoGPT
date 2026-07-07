@@ -440,6 +440,11 @@ def main():
                         "(c+r=H, 2c+4r=F). Default 1 = original greedy. "
                         "Recommended N=10 with --temperature 0.7 --top-k 10 "
                         "for stochastic sampling.")
+    p.add_argument("--ablate-head", default=None,
+                   help="format 'L,H' or 'L1,H1;L2,H2;...' — zero out output of "
+                        "layer L head H (semicolon-separated for multi-head "
+                        "ablation). Tests essentiality (e.g. L2H5 as 'H reader' "
+                        "identified in §5.24).")
     args = p.parse_args()
 
     # If best_of_n > 1 but temperature/top_k still greedy, warn user
@@ -465,6 +470,36 @@ def main():
     bvl_str = f"{float(bvl):.4f}" if bvl is not None else "?"
     print(f"[load] model loaded ({n_params/1e6:.2f}M params, iter_num={iter_num}, "
           f"best_val_loss={bvl_str})")
+
+    # Optional: ablate specific attention heads via forward pre-hook on c_proj.
+    # Supports multiple heads (semicolon-separated). Zeroing channels [h*head_dim
+    # : (h+1)*head_dim] before c_proj ≡ ablating head h.
+    if args.ablate_head is not None:
+        # Group heads by layer so we register one hook per layer
+        from collections import defaultdict
+        heads_per_layer = defaultdict(list)
+        for pair in args.ablate_head.split(";"):
+            l_str, h_str = pair.split(",")
+            heads_per_layer[int(l_str)].append(int(h_str))
+
+        def make_ablate_hook(head_indices, nh):
+            def hook(module, inp):
+                x = inp[0]
+                B, T, C = x.shape
+                head_dim = C // nh
+                x = x.clone()
+                x = x.view(B, T, nh, head_dim)
+                for hi in head_indices:
+                    x[:, :, hi, :] = 0
+                return (x.view(B, T, C),)
+            return hook
+
+        for l, head_list in heads_per_layer.items():
+            n_head = model.transformer.h[l].attn.n_head
+            model.transformer.h[l].attn.c_proj.register_forward_pre_hook(
+                make_ablate_hook(head_list, n_head)
+            )
+            print(f"[ablate] L{l} heads {head_list} zeroed ({n_head} heads/layer)")
 
     encode, decode, meta = load_tokenizer(meta_path)
     fmt = meta["format"]

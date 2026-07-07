@@ -2739,7 +2739,7 @@ layer-level (§5.25): L2 = D subskill 层,L3 = r subskill 层
 
 #### 新增产物
 - 改:`eval_cr.py` 加 `--ablate-head "L,H;L,H;..."` 支持多头 ablation
-- commit `_HASH_TODO_`
+- commit `04c7464` ✅ 2026-07-07 晚（exp(ablation): S5.u — L2H5 not essential, layer-level split L2=D L3=r）
 
 ---
 

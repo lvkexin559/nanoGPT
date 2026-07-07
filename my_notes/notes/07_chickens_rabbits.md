@@ -35,6 +35,7 @@
 - [x] 🎉 **S5.m 3-way × 2-scale wide 大对照**（2026-07-03 下午）✅ — **v6.2 → v6.3 双 gate 模型定型**；主任务 H=[5,100],aux [2,200],rev_width=4,3 fmt × 2 scale = 12 数据点；**wide_O 5M IID 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；capacity 单独打开 IID(D 从 30%→86%)但对 OOD 无用(FAR 仍 0%);context alignment 在 5M 下仍关键(fmt_O NEAR 86% vs fmt_N NEAR 21%);**v6.3 公式:OOD em ≈ capacity_gate × subskill_transfer_within_aux_range**;LLM 启示: Scale × Coverage 独立双 gate,乘积决定 em;commit `790ba7a`
 - [x] 对比表 12 行填完(baseline / S5.a-h + 扩 H + S5.i-m + wide 5M O)
 - [x] 🎉 **§14 Grand Summary 收官** ✅ 2026-07-06 上午（8 天 13 实验完整 arc 总结：v3 → v6.3 双 gate 模型 + 4 个最深 finding + LLM 启示 v6.3 版 + 4 个方法论 lesson + "给未来自己"的一段话）
+- [x] 🎯 **S5.n wide_O v2 depth 4×**（2026-07-07 中午）✅ — **v6.3 → v6.4 saturation curve**：depth 62→250/H 让 NEAR 从 86%→96.5% (+10.5pp)，per-step 全 uniform 96.5% 再排除 rev_width 位级问题；subskill 精度是 saturation curve 不是 threshold(62/86 → 250/96.5 → 1000/100 有 diminishing return)；v6.4 公式:**subskill_transfer ≈ f(depth_per_H) × boolean(H∈aux)**；commit `7b0c70d`
 
 **Project 状态**:**Phase 5+ 鸡兔同笼专题正式收官**（v6.3,19 commits,~3100 行笔记,已 push 到 [github.com/lvkexin559/nanoGPT](https://github.com/lvkexin559/nanoGPT)）
 
@@ -2077,7 +2078,7 @@ GPT-4 训练数据 **两层都拉满** —— 覆盖极广 + 每 slot depth 极�
 **新增产物**
 - 数据/ckpt(不入 git):`data/chickens_rabbits_wide_O_v2/`, `out-cr-wide-5m-O-v2/ckpt.pt`(val_loss=0.1436)
 - 新:`config/train_cr_wide_5m_O_v2.py`
-- commit `_HASH_TODO_`
+- commit `7b0c70d` ✅ 2026-07-07 中午（exp(depth): S5.n wide_O v2 depth 4x — v6.3 → v6.4 saturation curve）
 
 ---
 
@@ -2181,6 +2182,8 @@ git checkout -b hack/chickens-rabbits
 | `ea033da` | 🎉 exp(context-aligned): S5.k fmt_O — **v5.3 SUPER-BULL 命中 → v6 完整 recipe**（OOD em **100%**，每步 per-step 100%，跟 IID 一模一样；同 0.79M 参数、fmt_D 只到 3.5%、fmt_O 达 100%；证明 model capacity 从来不是 bottleneck，training signal 设计才是；v6 = coverage + depth + OOD 曝光 + context alignment 四条件） | 2026-07-02 |
 | `b1a5707` | exp(mask-role): S5.l fmt_P + super-OOD test — **v6 → v6.1 refinement**（fmt_P 全 mask + 扩 H 在 [21,50] 也 100% 但 [51,100] 崩 1.5%；**fmt_O 在 [51,100] 也只 2.5%**——反证 fmt_O 学的仍是 **subskill lookup** 不是真算法；v6.1: recipe scope 限于 aux H 覆盖范围内的 OOD） | 2026-07-03 |
 | `790ba7a` | 🎉 exp(wide): S5.m 3-way × 2-scale 大对照 — **v6.2 → v6.3 双 gate 定型**（H_train=[5,100], rev_width=4, aux [2,200], 3 fmt × 2 scale = 12 数据点；**wide_O 5M IID/BELOW 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；v6.3 公式 OOD em ≈ capacity × subskill_transfer_within_aux；GPT-4 = Scale × Coverage 双维度乘积） | 2026-07-03 |
+| `69819f1` | docs: §14 Grand Summary — Phase 5+ 项目正式收官 (v6.3) | 2026-07-06 |
+| `7b0c70d` | 🎯 exp(depth): S5.n wide_O v2 depth 4× — **v6.3 → v6.4 saturation curve**（n_train 100k→400k，aux depth 62/H→250/H；NEAR 86% → 96.5% (+10.5pp)；per-step 全 uniform 96.5% 再排除 rev_width 位级问题；saturation curve 拟合 62/86 → 250/96.5 → 1000/100 有 diminishing return） | 2026-07-07 |
 
 ---
 

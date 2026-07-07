@@ -36,6 +36,8 @@
 - [x] 对比表 12 行填完(baseline / S5.a-h + 扩 H + S5.i-m + wide 5M O)
 - [x] 🎉 **§14 Grand Summary 收官** ✅ 2026-07-06 上午（8 天 13 实验完整 arc 总结：v3 → v6.3 双 gate 模型 + 4 个最深 finding + LLM 启示 v6.3 版 + 4 个方法论 lesson + "给未来自己"的一段话）
 - [x] 🎯 **S5.n wide_O v2 depth 4×**（2026-07-07 中午）✅ — **v6.3 → v6.4 saturation curve**：depth 62→250/H 让 NEAR 从 86%→96.5% (+10.5pp)，per-step 全 uniform 96.5% 再排除 rev_width 位级问题；subskill 精度是 saturation curve 不是 threshold(62/86 → 250/96.5 → 1000/100 有 diminishing return)；v6.4 公式:**subskill_transfer ≈ f(depth_per_H) × boolean(H∈aux)**；commit `7b0c70d`
+- [x] **S5.o wide_O v3 depth 8×**（2026-07-07 下午）— 反直觉 dip: n_train 800k → unique 500/H × rep 11,total 仍 5500 但 NEAR 反降到 91%（-5.5pp）,per-step 首次分化 → 质疑 v6.4 单变量假设,见 §5.18
+- [x] 🎯 **S5.p wide_O v4 rep 44** ⭐**用户设计**（2026-07-07 下午）✅ — **v6.4 → v6.5 refinement**：n_train 200k → unique 125/H × rep 44,total 仍 5500 但 **NEAR 冲到 100%**！干净对照 3 点(rep 11→91%, 22→96.5%, 44→100%)证明 **rep_per_sample 是主导变量,不是 total exposure**；per-step 全 uniform 100%；v6.5 公式:**subskill_transfer ≈ g(rep_per_sample) × boolean(H∈aux)**；直接 direct 印证 Chinchilla data×compute 平衡原则；commit `0d5766e`
 
 **Project 状态**:**Phase 5+ 鸡兔同笼专题正式收官**（v6.3,19 commits,~3100 行笔记,已 push 到 [github.com/lvkexin559/nanoGPT](https://github.com/lvkexin559/nanoGPT)）
 
@@ -2181,7 +2183,7 @@ subskill_transfer_within_aux_range
 - 新:`data/chickens_rabbits_wide_O_v4/`(200k n_train)
 - 新:`config/train_cr_wide_5m_O_v4.py`
 - 新:`out-cr-wide-5m-O-v4/ckpt.pt`(val_loss=0.1435)
-- commit `_HASH_TODO_`
+- commit `0d5766e` ✅ 2026-07-07 下午（exp(rep-vs-uniq): S5.o/p wide_O v3/v4 — v6.4 → v6.5, rep is dominant not total）
 
 ---
 
@@ -2287,6 +2289,7 @@ git checkout -b hack/chickens-rabbits
 | `790ba7a` | 🎉 exp(wide): S5.m 3-way × 2-scale 大对照 — **v6.2 → v6.3 双 gate 定型**（H_train=[5,100], rev_width=4, aux [2,200], 3 fmt × 2 scale = 12 数据点；**wide_O 5M IID/BELOW 100% / NEAR 86% / FAR 4%** 完美体现 2×2 gate grid；v6.3 公式 OOD em ≈ capacity × subskill_transfer_within_aux；GPT-4 = Scale × Coverage 双维度乘积） | 2026-07-03 |
 | `69819f1` | docs: §14 Grand Summary — Phase 5+ 项目正式收官 (v6.3) | 2026-07-06 |
 | `7b0c70d` | 🎯 exp(depth): S5.n wide_O v2 depth 4× — **v6.3 → v6.4 saturation curve**（n_train 100k→400k，aux depth 62/H→250/H；NEAR 86% → 96.5% (+10.5pp)；per-step 全 uniform 96.5% 再排除 rev_width 位级问题；saturation curve 拟合 62/86 → 250/96.5 → 1000/100 有 diminishing return） | 2026-07-07 |
+| `0d5766e` | 🎯 exp(rep-vs-uniq): S5.o/p wide_O v3/v4 — **v6.4 → v6.5**（3-way total exposure=5500 对照：unique/rep = 500/11 → 91%, 250/22 → 96.5%, **125/44 → 100%** ⭐；**rep_per_sample 是主导变量**,total exposure 一致但 rep 决定精度；v6.5 formula: g(rep) × boolean(H∈aux);Chinchilla data×compute 平衡的 subskill 层面 direct 印证） | 2026-07-07 |
 
 ---
 

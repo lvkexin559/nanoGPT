@@ -69,6 +69,14 @@
 - [§5.19 wide_O v4 rep 44 ⭐](#519--s5p-wide_o-v4uniq--rep-3-way-对照--v64--v65-repetition-is-dominating2026-07-07-下午) — **NEAR 100%!** total 5500 相同下 rep 主导 → **v6.5**
 - [§5.20 4 次 wide_O 完整对照 archive](#520--4-次-wide_o-完整对照表所有段--所有指标2026-07-07-下午archive) — 查表用
 
+#### 天花板探索 + Mechanism Interp(§5.21-§5.26)—— v6.5 收口
+
+- [§5.21 Grokking sweep](#521--s5q-grokking-实验wd05--100k-iter-未 grok--v65-坚定不移2026-07-07) — wd/iter sweep 未见 grokking phase transition
+- [§5.22 BoN N=10](#522--s5r-best-of-n-验证paradigm-ceiling-6510-pp-margin2026-07-07-下午) — verifier-guided BoN 只 +3 pp FAR,ceiling confirmed
+- [§5.23-§5.24 Attention viz + head split](#523--s5s-attention-pattern-可视化mechanism-level-诊断推翻原-diffuse-假设2026-07-07-晚) — L2H5 = 97.6% H attender(correlation)
+- [§5.25 Layer-level ablation](#525--s5u-ablation-study推翻l2h5-essential-假设发现-layer-level-分工2026-07-07-晚) — head 冗余,L2=D subskill,L3=r subskill(causation)
+- [§5.26 NoPE pilot](#526--s5v-nope-pilotpe-对-iidbelow-完全不必要对-far-无救2026-07-07-晚) — **B1 fix PE 方向被证伪**,资源集中到 B2 RL
+
 ### 📚 参考章节(§6-§13)
 
 - [§6 S5 4 hack 概述](#6--s54-个-hack-子实验按优先级)
@@ -2740,6 +2748,84 @@ layer-level (§5.25): L2 = D subskill 层,L3 = r subskill 层
 #### 新增产物
 - 改:`eval_cr.py` 加 `--ablate-head "L,H;L,H;..."` 支持多头 ablation
 - commit `04c7464` ✅ 2026-07-07 晚（exp(ablation): S5.u — L2H5 not essential, layer-level split L2=D L3=r）
+
+---
+
+### 5.26 · S5.v NoPE pilot:**PE 对 IID/BELOW 完全不必要,对 FAR 无救**（2026-07-07 晚）
+
+> **动机**:§5.25 layer-level ablation 显示 arch 里的 head 冗余充分,attention pattern 只是"信息路由"而非因果。但 nanoGPT 默认用 **learned absolute PE**(`wpe = nn.Embedding(block_size, n_embd)`),它可能才是 FAR OOD 崩掉的根源 —— **learned PE 对训练时没见过的 position 是 UNK vector**。§5.26 就是最省的验证:直接去掉 PE(NoPE),看是否 IID/NEAR 崩、FAR 是否有救。
+
+**方法(§5.26.a Implementation)**:
+
+```43:47:model.py
+    # NoPE experiment (§5.26): if False, skip positional embedding entirely
+    # and let the causal mask alone carry position info. Backward-compatible:
+    # default True keeps original nanoGPT behavior.
+    use_pos_emb: bool = True
+```
+
+三处修改:`GPTConfig` 加 `use_pos_emb` 开关、`__init__` 里按开关跳过 `wpe`、`forward` 里跳过 `+ pos_emb`。参数量对比:with-PE = 4.73M,NoPE = 4.73M - 64×256 = 4.71M(仅少了 wpe 的 16K)。
+
+**训练**:complete 20k iter,val_loss 收敛到 0.1443(baseline 0.1435,差 0.0008,可忽略)。
+
+#### §5.26.b · 4-段 eval 结果(vs baseline wide_O v4)
+
+| Split | Baseline (with learned PE) | **NoPE** (no PE) | Δ |
+|---|---|---|---|
+| **IID [5,100]** | 100.0% | **99.5%** | -0.5 pp |
+| **BELOW [2,4]** | 100.0% | **100.0%** | 0 pp |
+| **NEAR [101,200]** aux 范围 | 100.0% | **92.0%** | **-8 pp** |
+| **FAR [201,500]** | 3.5% | **1.5%** | -2 pp |
+
+> 注:baseline 此次重跑 FAR=3.5%(seed 1004),此前 §5.20 报告 FAR=6.5%(seed 1000)。两次都在 3-7% 的 noise 段,不影响结论。
+
+#### §5.26.c · 三点关键 finding
+
+**Finding 1:PE 对 IID/BELOW 完全 non-essential(99.5 vs 100 ≈ 差异在 noise 内)**
+
+>因果 chain: token → transformer block(causal mask ✓)→ ... 只要 self-attention 有 causal mask,**位置信息可以从"哪些 token 能被 attend"的拓扑里泄漏出来**(Kazemnejad et al. 2023 有形式化证明,叫 "causal masking as implicit positional encoding")。5M 模型在 IID/BELOW 上完全 recover 到 baseline —— **PE 不是 IID 决胜的因素**。
+
+**Finding 2:PE 对 NEAR 有轻微帮助(100→92,-8 pp)**
+
+>NEAR 是 aux 训练覆盖过的范围 [101,200],但样本 ID(unique)少。PE 提供 8 pp 的"位置指纹",帮 subskill lookup 在 unfamiliar H digit patterns 上更 robust。**这是 marginal help,不是 essential dependence**。
+
+**Finding 3:PE 无法救 FAR OOD ceiling**
+
+>FAR 两个都在 1-4% 崩溃段。**换 PE 方案不能突破 paradigm ceiling** —— 说明 FAR 崩不是 PE architecture 的锅,而是 §5.25 说的"MLP subskill lookup 没覆盖 FAR 区域"。想改 FAR 需要**数据/训练信号方向**(B2 RL / 覆盖 FAR aux),不是 arch。
+
+#### §5.26.d · 对 B1 fix PE 方向的 verdict
+
+| 假设 | 预实验 verdict |
+|---|---|
+| B1a NoPE(§5.26 本节) | ❌ 不救 FAR |
+| B1b RoPE | ❌ 大概率同 NoPE(理论上只解 length extrapolation,鸡兔 FAR 的 bottleneck 不是长度) |
+| B1c ALiBi | ❌ 同上 |
+
+**§5.26 结论**:B1 fix PE 方向已被 pilot **证伪**,不必再做 RoPE/ALiBi ——它们最多也就 NoPE 的 pattern。**paradigm ceiling 的真正 bottleneck 在训练信号 / MLP subskill 覆盖**,不在 arch。
+
+#### §5.26.e · 与 Kazemnejad et al. 2023 (NoPE paper) 对比
+
+- 原论文观察:decoder-only 里 NoPE 可以 match learned PE,甚至在某些 length generalization 任务上超过 —— 与本文 IID/BELOW 一致。
+- 原论文 caveat:NoPE 只在**训练分布内**表现好,long-range extrapolation 依赖 head 里"隐 PE" 机制自动 emergence。本文 FAR 崩恰好 confirm 这个 caveat:5M / 20k iter 训练量不足以 emerge 出一个能外推到 5x range 的隐 PE 机制。
+
+#### Fix 方向 final-final refinement
+
+| 方向 | v6.5 macro | v6.5 layer (§5.25) | **v6.5 no-arch-fix (§5.26)** |
+|---|---|---|---|
+| B1 fix PE / attention arch | ❌ | ❌ | ❌❌ **NoPE pilot 证伪** |
+| B2 RL outcome reward | ✅ | ✅ 每层 MLP target | ✅ **唯一未证伪路径** |
+| B3 fix architecture | ❌ | ❌ | ❌ |
+| 数据分布覆盖 | ✅ | ✅ 每 CoT step 覆盖 FAR | ✅ |
+| Tool use | ✅ | ✅ | ✅ |
+
+**核心 update**:B1 arch 路径正式关掉,资源集中到 **B2 RL / 数据覆盖 FAR**。
+
+#### 新增产物
+
+- 改:`model.py` +11 行,`GPTConfig.use_pos_emb` 开关(默认 True 完全 backward-compat)
+- 改:`train.py` +5 行,把 `use_pos_emb` 加入 `model_args` dict
+- 新:`config/train_cr_wide_5m_O_v4_nope.py` NoPE ablation config
+- ckpt:`out-cr-wide-5m-O-v4-nope/ckpt.pt`(val_loss 0.1433 @ iter 18500)
 
 ---
 

@@ -2541,6 +2541,115 @@ FAR(H=450):  rev_pad(4) = "0540"    ← informative bit 在 pos 4-5 但 char 集
 
 ---
 
+### 5.24 · S5.t Head-level 分析:**推翻 head-avg diffuse 假象,发现 L2H5 = 97.6% H attender**（2026-07-07 晚）
+
+> **动机**:§5.23 结论是"attention 全都 diffuse"(head-averaging 后)。但 **head-avg 会稀释 signal** —— 如果一个 layer 里只有一个 head 是专门读 H 的,另 7 个 diffuse,avg 后就看不到 H attender。深挖 head-level split。
+
+**扩展 `viz_attention.py`**:加 `--per-head` flag,分别 report 每 (layer, head) 的 entropy/H_mass/peak_pos。
+
+**wide_O v4(6L×8H = 48 pairs)FAR 关键 finding**:
+
+Head-level 上出现**清晰的 3 类分工**:
+
+**1. 🎯 H-Attender heads(明确的 H 数字读取器)**
+
+| head | Entropy(FAR)| **H_mass(FAR)** | 说明 |
+|---|---:|---:|---|
+| **L2H5** | **0.178** | **83.2%** | attention 83% 集中在 H 数字! |
+| L3H3 | 0.319 | 58.9% | |
+| L3H4 | 0.394 | 55.2% | |
+| L2H3 | 0.216 | 52.2% | |
+
+**2. Attention Sinks**(集中在 separator tokens,Xiao et al. 2023 现象)
+
+| head | Entropy | H_mass | Peak Pos | 说明 |
+|---|---:|---:|---:|---|
+| L1H7 | 0.034 | 0.1% | 7(F=)| 完全 attend to `F=` |
+| L1H0 | 0.078 | 0.0% | 7(F=)| |
+| L1H3 | 0.101 | 0.0% | 1(=)| 完全 attend to `H=` 的 `=` |
+| L1H5 | 0.251 | 0.0% | 1(=)| |
+
+**3. Context Aggregators**(diffuse,后期整合)
+
+Layer 4-5 大多数 heads: entropy > 0.7,H_mass < 0.4,peak 分散。
+
+#### 关键对照:IID vs FAR 的 L2H5
+
+| L2H5 | Entropy | **H_mass** | Peak_val |
+|---|---:|---:|---:|
+| **IID** | 0.057(极 focused!)| **97.6%** | 0.971 |
+| **FAR** | 0.178(仍 focused)| 83.2% | 0.807 |
+
+**L2H5 是明确的 H-reader**:IID 上 attention 97.6% 集中在 H digits,FAR 上仍 83.2%(仅降 14pp)。**FAR 上 H 信息被 attention fully extract**,只是稍微 diffuse。
+
+#### 完整 microscopic mechanism
+
+**IID(em=100%)**:
+
+```
+attention 分工:
+  L1 heads (sinks) → 定位 =, F= tokens
+  L2H5           → 97.6% H_mass (H digits read successfully)
+  L3H3/H4        → 55-80% H_mass (confirmation reader)
+  L4/L5          → diffuse (context integration)
+
+MLP 里:
+  收到 H digit signal → 从训练分布查表 → 输出正确 2H → em ✓
+```
+
+**FAR(em=6.5%)**:
+
+```
+attention 分工:
+  L1 heads → 一样 定位 = / F=
+  L2H5    → 83% H_mass (**H digits STILL read successfully**)
+  L3H3/H4 → 55-59% H_mass (仍 focused,略降)
+  L4/L5   → diffuse
+
+MLP 里:
+  收到 H digit signal → 训练分布外 → **lookup fails** → em ✗
+```
+
+**关键**:attention 层**尽职 extract H**(FAR 上 L2H5 仍 83%),但**MLP downstream 不会用 FAR H**。
+
+#### §5.23 结论 refine
+
+**原 §5.23**:"Attention 全都 diffuse,MLP 是 mechanism"
+**§5.24 refinement**:
+- ~~Attention 全都 diffuse~~ **head-avg 假象**
+- **Attention 有专门的 H-reader(L2H5)**,IID/FAR 上都 focused
+- **MLP 仍是 bottleneck** —— attention 尽职 extract H,但 MLP downstream lookup 只覆盖 IID (pos, char) 组合
+
+#### Paper 级 3-layer split 直接观察
+
+我们在鸡兔同笼 toy 上直接看到**主流 mechanistic interpretability 文献 3 类 head 的干净实证**:
+
+1. **Attention Sinks**(Xiao et al. 2023 *Efficient Streaming Language Models with Attention Sinks*)
+   - L1H0/H3/H7,entropy 0.03-0.10,集中在 sep tokens
+2. **Specialized Attention Heads**(Elhage et al. 2022 *Framework for Transformer Circuits*; Olsson et al. 2022 *In-context Learning and Induction Heads*)
+   - L2H5(H-reader),L3H3/H4(confirmation)
+3. **MLP as Key-Value Memory**(Geva et al. 2020 *Transformer Feed-Forward Layers Are Key-Value Memories*)
+   - 从 attention 分工可见 MLP 才是 lookup 主体
+
+**这个 finding 是 paper-worthy 的** —— transformer 内部分工的 3 类模式,通常需要 large model + sophisticated probing 才能观察,我们在 5M 鸡兔同笼 toy 上就干净看到了。
+
+#### v6.5 fix 方向再修正
+
+| 方向 | v6.5 macro | v6.5 micro (§5.23) | **v6.5 micro-refined (§5.24)** |
+|---|---|---|---|
+| B1 fix PE / attention arch | ❌ | ❌ | ❌ **attention 已经 healthy(L2H5 干净 work)** |
+| B2 RL outcome reward | ✅ | ✅ | ✅ **direct target MLP lookup 更新** |
+| B3 fix architecture | ❌ | ❌ | ❌ arch OK |
+| 数据分布覆盖 | ✅ | ✅ | ✅ MLP 需见过 FAR (pos, char) 组合 |
+
+**核心 refine**:B2 RL 的具体 target 就是 MLP 的 lookup。attention 已经在 read 正确的 signal,只需让 MLP 学 "H → 2H" 抽象 mapping(而不是位置-char lookup)。
+
+#### 新增产物
+- 改:`viz_attention.py` 加 `--per-head` mode + `analyze_per_head()` + `per_head_report()`
+- commit `_HASH_TODO_`
+
+---
+
 ## 6 · S5：4 个 hack 子实验（按优先级）
 
 ### S5.a · CoT 中间步骤（强烈推荐做）

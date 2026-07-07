@@ -120,6 +120,25 @@ def compute_diffuseness(att_row):
     return uniform, focus_ratio, ent_norm
 
 
+def analyze_per_head(att_maps, seq_len, h_start, h_end):
+    """Return list of (layer, head, entropy_norm, h_mass, peak_pos, peak_val)
+    tuples so we can rank heads by focus / H attention."""
+    import math as _m
+    results = []
+    max_ent = _m.log(seq_len)
+    for l, att in enumerate(att_maps):
+        n_head = att.size(1)
+        for h in range(n_head):
+            last_row = att[0, h, -1, :]
+            p = last_row[last_row > 1e-12]
+            ent = -(p * (p + 1e-30).log()).sum().item()
+            ent_norm = ent / max_ent if max_ent > 0 else 0.0
+            h_mass = float(last_row[h_start:h_end].sum())
+            peak_val, peak_pos = last_row.max().item(), int(last_row.argmax().item())
+            results.append((l, h, ent_norm, h_mass, peak_pos, peak_val))
+    return results
+
+
 def visualize(ckpt_path, data_dir, prompts, title_suffix):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, meta = load_model_and_meta(
@@ -182,6 +201,72 @@ def visualize(ckpt_path, data_dir, prompts, title_suffix):
                       f"{w:.4f} |{bar}|{marker}")
 
 
+def per_head_report(ckpt_path, data_dir, prompts, title_suffix, top_k=6):
+    """Show top-K most focused (low-entropy) and top-K most H-attentive heads,
+    aggregated across `prompts`. This spots any specialized 'H attender' head
+    that avg-across-heads would dilute."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, meta = load_model_and_meta(
+        ckpt_path, os.path.join(data_dir, "meta.pkl"), device
+    )
+    stoi = meta["stoi"]
+    rev_width = meta.get("rev_width", 3)
+    n_layer = len(model.transformer.h)
+    n_head = model.transformer.h[0].attn.n_head
+
+    print(f"\n{'='*80}")
+    print(f"  PER-HEAD ANALYSIS — {title_suffix}")
+    print(f"  ckpt: {ckpt_path}")
+    print(f"  n_layer={n_layer}  n_head={n_head}  rev_width={rev_width}")
+    print(f"{'='*80}")
+
+    # Aggregate per (layer, head) across all prompts
+    from collections import defaultdict
+    agg = defaultdict(lambda: {"ent": [], "h_mass": [], "peak_pos": [], "peak_val": []})
+    for prompt in prompts:
+        ids = encode_prompt(prompt, stoi)
+        input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+        with torch.no_grad():
+            att_maps = get_attention_maps(model, input_ids)
+        h_start, h_end = 2, 2 + rev_width
+        heads = analyze_per_head(att_maps, len(ids), h_start, h_end)
+        for (l, h, ent, hmass, pkpos, pkval) in heads:
+            agg[(l, h)]["ent"].append(ent)
+            agg[(l, h)]["h_mass"].append(hmass)
+            agg[(l, h)]["peak_pos"].append(pkpos)
+            agg[(l, h)]["peak_val"].append(pkval)
+
+    rows = []
+    for (l, h), stats in agg.items():
+        mean_ent = sum(stats["ent"]) / len(stats["ent"])
+        mean_hmass = sum(stats["h_mass"]) / len(stats["h_mass"])
+        mean_pkval = sum(stats["peak_val"]) / len(stats["peak_val"])
+        # Modal peak position (most common) as a proxy
+        from collections import Counter
+        pk_pos_mode = Counter(stats["peak_pos"]).most_common(1)[0][0]
+        rows.append((l, h, mean_ent, mean_hmass, pk_pos_mode, mean_pkval))
+
+    print(f"\n[all {n_layer*n_head} (layer,head) pairs — averaged across {len(prompts)} prompts]\n")
+    print(f"  {'L':>2} {'H':>2}  entropy   H_mass  peak_pos  peak_val")
+    print(f"  {'-'*45}")
+    for (l, h, ent, hmass, pkpos, pkval) in sorted(rows, key=lambda r: (r[0], r[1])):
+        print(f"  {l:>2} {h:>2}    {ent:.3f}   {hmass:.3f}     {pkpos:>2d}    {pkval:.3f}")
+
+    # Top-K by focus (low entropy)
+    print(f"\n[Top-{top_k} most FOCUSED heads (lowest entropy)]")
+    print(f"  {'rank':>4}  L H   entropy   H_mass  peak_pos peak_val")
+    for i, r in enumerate(sorted(rows, key=lambda r: r[2])[:top_k], 1):
+        l, h, ent, hmass, pkpos, pkval = r
+        print(f"  {i:>4}  {l} {h}    {ent:.3f}   {hmass:.3f}     {pkpos:>2d}    {pkval:.3f}")
+
+    # Top-K by H_mass
+    print(f"\n[Top-{top_k} most H-DIGIT-ATTENTIVE heads (highest H_mass)]")
+    print(f"  {'rank':>4}  L H   entropy   H_mass  peak_pos peak_val")
+    for i, r in enumerate(sorted(rows, key=lambda r: -r[3])[:top_k], 1):
+        l, h, ent, hmass, pkpos, pkval = r
+        print(f"  {i:>4}  {l} {h}    {ent:.3f}   {hmass:.3f}     {pkpos:>2d}    {pkval:.3f}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True)
@@ -189,9 +274,15 @@ def main():
     p.add_argument("--title", default="")
     p.add_argument("--prompts", nargs="+", required=True,
                    help="list of already-formatted prompts. Use \\n for newline.")
+    p.add_argument("--per-head", action="store_true",
+                   help="show per-head analysis (spot 'H attender' heads that "
+                        "would be diluted by head-averaging)")
     args = p.parse_args()
     prompts = [p.replace("\\n", "\n") for p in args.prompts]
-    visualize(args.ckpt, args.data_dir, prompts, args.title)
+    if args.per_head:
+        per_head_report(args.ckpt, args.data_dir, prompts, args.title)
+    else:
+        visualize(args.ckpt, args.data_dir, prompts, args.title)
 
 
 if __name__ == "__main__":

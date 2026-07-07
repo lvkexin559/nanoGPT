@@ -2453,7 +2453,7 @@ GPT-o1 / DeepSeek-R1 的 test-time scaling 之所以 work,不是"抽奖 magic",�
 - 改:`eval_cr.py` 加 `constraint_verifier()` + `--best-of-n` CLI 参数
 - 新:`config/train_cr_wide_5m_O_grok_a.py`(Grok-A 试验)
 - Ckpt(不入 git):`out-cr-wide-5m-O-grok-a/ckpt.pt`
-- commit `_HASH_TODO_`
+- commit `8da2e0a` ✅ 2026-07-07 晚（exp(test-time): S5.q Grok-A + S5.r BoN — v6.5 final, paradigm ceiling confirmed）
 
 ---
 

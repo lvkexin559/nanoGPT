@@ -78,6 +78,7 @@
 - [§5.26 NoPE pilot](#526--s5v-nope-pilotpe-对-iidbelow-完全不必要对-far-无救2026-07-07-晚) — ⚠️ 初步结论作废,见 §5.27
 - [**§5.27 4-point PE + `_rev_pad` bugfix**](#527--s5w-pe-4-点全对照--_rev_pad-bug-修复rope-在-far-上真的破-ceiling2026-07-08-中午) — **RoPE FAR 3.5→24.5%**,B1 fix PE 方向重新验证 ⭐
 - [**§5.28 Archive audit(全部 rev_width=4 ckpt 重跑)**](#528--s5x-archive-audit-_rev_pad-bug-影响的全部历史-ckpt-重跑2026-07-08-下午) — **grok-a 是 winner(FAR 17%),small 模型 FAR 26%**,§5.16-5.21 多个结论 revision ⭐⭐
+- [**§5.29 RoPE + Grokking stack**](#529--s5y-rope--grokking-stackfar-35--900-super-multiplicativeparadigm-ceiling-官方破2026-07-08-下午) — **FAR 3.5% → 90.0%,super-multiplicative synergy,paradigm ceiling 官方破** ⭐⭐⭐
 
 ### 📚 参考章节(§6-§13)
 
@@ -3071,6 +3072,121 @@ RoPE FAR n=20 的 per-step 也在同一方向:two_h=50%, D=50%, r=45%, c=35% —
 
 - 重跑:10 个历史 ckpt × 4 段 = 40 evals with fixed `_rev_pad`,数字表载入 §5.28.a/b
 - 无新代码 —— eval_cr.py 的 fix 已在 §5.27 commit 里
+
+---
+
+### 5.29 · S5.y RoPE + Grokking stack:**FAR 3.5% → 90.0% super-multiplicative,paradigm ceiling 官方破**(2026-07-08 下午)⭐⭐⭐
+
+> **动机**:§5.28 audit 表出两个独立正交 FAR lever —— RoPE(FAR 24.5%,+21 pp)与 grokking(FAR 17%,+13.5 pp)。**试直接叠加**:同一 wide_O v4 数据,同一 5M 架构,pe_type='rope' + wd=0.5 + max_iters=100k,看是叠加(35-45%)、乘性(40-60%)还是超乘性(> 60%)。
+
+#### §5.29.a · Setup
+
+`config/train_cr_wide_5m_O_v4_rope_grok.py`:baseline v4 config + 两个 change:
+
+```python
+pe_type = 'rope'          # 从 learned → rope
+weight_decay = 0.5        # 从 0.1 → 0.5
+max_iters = 100000        # 从 20k → 100k
+lr_decay_iters = 100000   # 同步
+```
+
+其他一切(数据 wide_O_v4, arch 5M, block_size 64, lr 1e-3, batch 256)**逐字不改**。
+
+**train val_loss 曲线**:
+- iter 500:0.14 附近(和 baseline 20k 训到 iter 500 时几乎一样)
+- iter 20k:0.1449(与纯 baseline 完成时 0.1435 差 0.001)
+- iter 50k:0.1447
+- iter 100k:0.1435 best,与 baseline final 一模一样
+
+**val_loss 完全看不出这是 breakthrough 模型** —— 这次比 §5.27 更极致:teacher-forced next-token loss 完全 miss 掉 autoregressive extrapolation 差异。
+
+#### §5.29.b · 4-段 eval 结果(post-fix `_rev_pad`,n=200/split,greedy)
+
+| Split | RoPE + Grok stack | baseline (v4) | RoPE only | grok only |
+|---|---|---|---|---|
+| IID [5,100] | 100.0% | 100.0% | 100.0% | 100.0% |
+| BELOW [2,4] | 100.0% | 100.0% | 100.0% | 100.0% |
+| NEAR [101,200] | 100.0% | 100.0% | 100.0% | 100.0% |
+| **FAR [201,500]** | **90.0%** ⭐ | 3.5% | 24.5% | 17.0% |
+| digit_acc FAR | **97.1%** | 85.7% | 82.0% | 90.5% |
+| per-step FAR (2H/D/r/c) | 93/87/87/87 | ~10-30 各 | 50/50/45/35 | ? |
+
+**FAR 90.0% = 26× baseline,3.7× RoPE-only,5.3× grok-only** —— **super-multiplicative synergy**,远高于 additive/multiplicative 预测。
+
+#### §5.29.c · 手工 verify(sample #6-#12,seed=1004)
+
+抽 sample #6 GT H=232 F=570 → 2H=464(rev "4640") D=106(rev "6010") r=53(rev "3500") c=179(rev "9710"),模型输出 `2H=4640 D=6010 r=3500 c=9710` **每位都对**。#7/#8/#10/#12 同样每位对到位。**这不是 memorize,是真算法**。
+
+- H=232 从没在训练分布([5,100] main + [2,200] aux)见过
+- 2*232=464 需要模型能对**新的**大数字做 2× 乘法
+- 570-464=106 需要对新大数字做减法
+- 106/2=53 需要新大数字除 2
+- 232-53=179 需要新大数字减法
+
+每一个 subskill 都要 out-of-training 泛化,而且**四步都要 sequentially 对**才能 exact match。90% 说明**这四步 subskill 都真被 encode 成算法而非 lookup**。
+
+#### §5.29.d · 3 个 mechanism-level 假说(解释 super-multiplicative synergy)
+
+**Hypothesis 1:RoPE 提供"外推友好的位置空间",grokking 提供"训练时间学出算法"**
+
+- learned absolute PE 给 H>100 的位置是 UNK vector → 就算 grokking 想学 relative algorithm,PE 层就把位置信息毁了
+- RoPE 保证位置空间对 [5,500] 都是连续的 → grokking 才有 space 把 subskill 学成真正的 relative algorithm
+- 类似 "先修 arch 让 lever 打得进来,再用 iter 做深"
+
+**Hypothesis 2:两个 lever 攻击不同 bottleneck,不 overlap**
+
+- RoPE 攻击 "位置 encoding 泛化性" bottleneck(改 arch)
+- grokking 攻击 "训练时间 subskill compile" bottleneck(改 iter × wd)
+- 分别 unlock 后,dataset 里的 subskill 覆盖 [2,200] 才能被利用到 H=500
+
+**Hypothesis 3:val_loss noise ceiling 之下藏 phase transition**
+
+- 4 个模型 val_loss 都 0.143-0.144,teacher-forced 完全 noise 内
+- FAR em 分四档:3.5% / 17% / 24.5% / 90% —— 差异在 autoregressive gen 里 accumulate 出来
+- 真正的 grokking phase transition **不显示在 val_loss 上**,只在多步 autoregressive generation 才显现
+- **教训**:未来做 grokking sweep 必须周期性跑 FAR em(autoregressive),不能靠 val_loss curve
+
+#### §5.29.e · 新 lever ranking(post-§5.29)
+
+| Rank | Lever | FAR em | vs baseline | 备注 |
+|---|---|---|---|---|
+| 1 ⭐⭐⭐ | **RoPE + grokking stack** | **90.0%** | **26×** | 本节 breakthrough |
+| 2 | wide-O-small (0.79M) | 26.0% | 7.4× | §5.28 revision |
+| 3 | RoPE alone | 24.5% | 7× | §5.27 |
+| 4 | grokking alone | 17.0% | 4.9× | §5.21 audited |
+| 5 | BoN N=10 (v4) | ~9.5% | 2.7× | §5.22, 需 audit 重跑 |
+| 6 | NoPE alone | 8.5% | 2.4× | §5.26 audited |
+| 7 | ALiBi alone | 7.0% | 2× | §5.27 |
+| — | baseline | 3.5% | 1× | v4 post-audit |
+
+**未测但可以直觉预测**:
+- **small (0.79M) + RoPE + grokking**:possibly hit 95%+ FAR,可能是 sub-1M 参数级的真算法学习 candidate
+- **RoPE + grokking + aux 覆盖到 [201,500]**:大概率 100% FAR(补齐 subskill 覆盖)
+- **RoPE + grokking + BoN**:锦上添花,可能拉到 95%+
+
+#### §5.29.f · v6.6 paradigm update
+
+**v6.5 结论(post-§5.28 audit)**:
+- ❌ FAR ceiling ~25%(RoPE alone),arch fix 是 first-order lever
+
+**v6.6 结论(post-§5.29)**:
+- ✅ **FAR 有 90%+ 可达,paradigm ceiling 不是 arch/regularization 单独的限制,而是"arch × training-time 联合"的限制**
+- ✅ RoPE 与 grokking **super-multiplicative synergize**,不是 additive
+- ✅ 5M 参数级模型能在 fmt_O 数据上学到真正的多步算术算法(至少 [5,500] 范围内)
+- ⚠️ 剩 10% FAR gap:大概率是"H=201-500 里有些具体值需要更长训 iter"或"aux [2,200] 上界让 [401,500] 部分 subskill 差一点点覆盖"
+
+#### §5.29.g · 新增产物
+
+- **新** `config/train_cr_wide_5m_O_v4_rope_grok.py`
+- **新 ckpt**:`out-cr-wide-5m-O-v4-rope-grok/ckpt.pt`(val_loss 0.1435 @ iter 100000)
+- 训练时长 ~43 min(100k iter 5M 单卡)
+
+#### §5.29.h · Methodology meta-lessons
+
+1. **两个正交 lever 单跑 additive-ish (+21 + +13.5 = +34.5 pp),叠加 super-multiplicative (+86.5 pp)** —— 说明每个 lever 单跑时都被 arch/train-time 的另一个 bottleneck 掐着 ceiling,联合起来解锁的空间远大于单跑之和
+2. **val_loss 是 diagnostic 陷阱** —— §5.27 4 个模型同分,§5.29 stack 也同分(0.143-0.144),但 FAR em 差 26×
+3. **发现新 lever 后一定要跑正交叠加** —— 单跑 RoPE 24.5% 时,如果没有 §5.28 audit 挖出 grokking 是 real winner,§5.29 就不会想到 stack;audit → 双正交 lever → stack test 是 3-step 认知链
+4. **arch fix 不是 "证伪→证真" 的二元判定,是 "在什么 train-time regime 下 unlock"** —— RoPE 在 20k iter 只 lift 21 pp,在 100k+wd=0.5 直接 lift 86 pp。这教训了 §5.26 "PE 不 essential" 那种 "20k iter 判死刑" 的做法
 
 ---
 

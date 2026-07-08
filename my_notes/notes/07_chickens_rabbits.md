@@ -79,6 +79,7 @@
 - [**§5.27 4-point PE + `_rev_pad` bugfix**](#527--s5w-pe-4-点全对照--_rev_pad-bug-修复rope-在-far-上真的破-ceiling2026-07-08-中午) — **RoPE FAR 3.5→24.5%**,B1 fix PE 方向重新验证 ⭐
 - [**§5.28 Archive audit(全部 rev_width=4 ckpt 重跑)**](#528--s5x-archive-audit-_rev_pad-bug-影响的全部历史-ckpt-重跑2026-07-08-下午) — **grok-a 是 winner(FAR 17%),small 模型 FAR 26%**,§5.16-5.21 多个结论 revision ⭐⭐
 - [**§5.29 RoPE + Grokking stack**](#529--s5y-rope--grokking-stackfar-35--900-super-multiplicativeparadigm-ceiling-官方破2026-07-08-下午) — **FAR 3.5% → 90.0%,super-multiplicative synergy,paradigm ceiling 官方破** ⭐⭐⭐
+- [**§5.30 Small + RoPE + Grok(负结果)**](#530--s5z-small-079m--rope--grokcapacity-是-first-order-requirement越小越好-假说-falsify2026-07-08-下午) — **small stack FAR 19%,"越小越好" 假说 falsify**,capacity 是 first-order requirement
 
 ### 📚 参考章节(§6-§13)
 
@@ -3187,6 +3188,86 @@ lr_decay_iters = 100000   # 同步
 2. **val_loss 是 diagnostic 陷阱** —— §5.27 4 个模型同分,§5.29 stack 也同分(0.143-0.144),但 FAR em 差 26×
 3. **发现新 lever 后一定要跑正交叠加** —— 单跑 RoPE 24.5% 时,如果没有 §5.28 audit 挖出 grokking 是 real winner,§5.29 就不会想到 stack;audit → 双正交 lever → stack test 是 3-step 认知链
 4. **arch fix 不是 "证伪→证真" 的二元判定,是 "在什么 train-time regime 下 unlock"** —— RoPE 在 20k iter 只 lift 21 pp,在 100k+wd=0.5 直接 lift 86 pp。这教训了 §5.26 "PE 不 essential" 那种 "20k iter 判死刑" 的做法
+
+---
+
+### 5.30 · S5.z Small (0.79M) + RoPE + Grok:**capacity 是 first-order requirement,"越小越好" 假说 falsify**(2026-07-08 下午)
+
+> **动机**:§5.28 audit 显示 small (0.79M, learned PE, 17k iter, wide_O v1 数据) FAR = 26.0%,比 5M baseline 3.5% 高 7.4×。§5.29 5M + RoPE + grok 组合到 90%。**直接问:small 加 RoPE + grok 是不是能到 90%+ 且 params 少 6×**?如果成立就是 sub-1M 参数级真算法学习 candidate。
+
+#### §5.30.a · Setup
+
+`config/train_cr_wide_small_O_v4_rope_grok.py`:与 §5.29 5M stack **完全一样**,只把架构换成 small:
+- `n_layer=4, n_head=4, n_embd=128` (0.79M vs 5M 的 4.73M)
+- 其他:pe_type='rope', wd=0.5, max_iters=100k, wide_O_v4 数据
+
+#### §5.30.b · 4-段 eval 结果
+
+| Split | small + RoPE + grok (**§5.30**) | 5M + RoPE + grok (§5.29) | small alone (§5.28, v1 data) |
+|---|---|---|---|
+| IID [5,100] | 100.0% | 100.0% | 100.0% |
+| BELOW [2,4] | 100.0% | 100.0% | 100.0% |
+| NEAR [101,200] | 100.0% | 100.0% | 100.0% |
+| **FAR [201,500]** | **19.0%** | **90.0%** | 26.0% |
+| digit_acc FAR | 87.9% | 97.1% | 90.6% |
+| val_loss (best) | 0.1440 | 0.1435 | 0.1428 |
+
+**关键 negative result**:small + RoPE + grok **不但没 lift 到 90%,反而比 small alone (26%) 略降到 19%**。stack 组合对 small 是**负作用**。
+
+#### §5.30.c · 3 个 hypothesis(解释为什么 stack 对 small 无效)
+
+**H1(top pick):capacity floor 未过 → algorithm 编译不完整**
+
+- 5M 有 encode "位置 → 数字 → 算术" 三层 mapping 的容量
+- 0.79M 只够 encode 前两层(memorize subskill lookup)
+- RoPE + grok 想让第三层 relative algorithm emerge,但 params 太少空间挤不下 → 学到的仍是 subskill lookup(FAR 19% 就在 lookup ceiling 附近)
+- **推论**:algorithm compilation 存在 hard capacity floor(在 nanoGPT × chickens_rabbits 上,floor 在 0.79M-5M 之间)
+
+**H2:double regularization → 过 shrinkage**
+
+- 小 capacity 是隐式 regularizer,wd=0.5 是显式 strong regularizer
+- 叠加在小模型上 → 权重 shrink 过头,algorithm 学不出来
+- 但 IID 100% 说明 lookup 部分还在 → H2 只解释了 FAR gap
+
+**H3:v1 vs v4 数据差异**
+
+- §5.28 small alone 用 wide_O v1(depth 22/H, uniq 100k)—— unique 多、rep 少
+- §5.30 用 wide_O v4(depth 44/H, uniq 25k)—— unique 少、rep 多
+- 小 capacity 可能更 benefit from 多样 sample 而非重复训 → v4 对 small 是坏 data
+- 未测
+
+#### §5.30.d · 对 lever ranking 的 update
+
+| Rank | Lever | FAR em | vs baseline | 备注 |
+|---|---|---|---|---|
+| 1 ⭐⭐⭐ | **5M + RoPE + grok stack** | **90.0%** | **26×** | §5.29 |
+| 2 | small (0.79M, wide_O v1, 17k iter) | 26.0% | 7.4× | §5.28 audit |
+| 3 | 5M + RoPE alone (20k iter) | 24.5% | 7× | §5.27 |
+| 4 | **small + RoPE + grok stack** | **19.0%** ⚠️ | 5.4× | **§5.30 negative** |
+| 5 | 5M + grok alone (100k iter) | 17.0% | 4.9× | §5.21 audited |
+| 6 | 5M + NoPE | 8.5% | 2.4× | §5.26 audited |
+| 7 | 5M + ALiBi | 7.0% | 2× | §5.27 |
+| — | 5M baseline | 3.5% | 1× | v4 post-audit |
+
+**Refine**:small 的 26% 是 §5.28 audit 里 small 用 v1 数据 + 短训做出来的一个 point。**scale up 到 5M 是必要的**,再加 RoPE + grok 才能上 90%。**"越小越好" 假说 falsify**。
+
+#### §5.30.e · v6.6.1 paradigm(refine v6.6)
+
+- v6.6:FAR 90% ceiling 是 arch × train-time 联合突破
+- **v6.6.1**:**capacity 是 first-order requirement** —— 至少需要 ~5M(6 layers × 8 heads × 256 dim)才能 compile 出多步 relative-position 算法
+- capacity 不是 "越大越好",5M 已 enough;但 <1M 是 hard floor,达不到
+
+#### §5.30.f · Open questions
+
+1. capacity floor 具体在哪(1M/2M/3M)?未测
+2. small + wide_O v1 + RoPE + grok 能否 recover 到 § 5.28 的 26%+?未测(H3)
+3. 5M + RoPE + grok + aux 扩到 [201,500] 能否补上剩 10% FAR gap 到 100%?留 §14 收官前测
+
+#### §5.30.g · 新增产物
+
+- **新** `config/train_cr_wide_small_O_v4_rope_grok.py`
+- **新 ckpt**:`out-cr-wide-small-O-v4-rope-grok/ckpt.pt`(val_loss 0.1440 @ iter 100k)
+- 训练时长 ~35 min(100k iter 0.79M 单卡)
 
 ---
 

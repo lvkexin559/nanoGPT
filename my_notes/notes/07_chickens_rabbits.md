@@ -77,6 +77,7 @@
 - [§5.25 Layer-level ablation](#525--s5u-ablation-study推翻l2h5-essential-假设发现-layer-level-分工2026-07-07-晚) — head 冗余,L2=D subskill,L3=r subskill(causation)
 - [§5.26 NoPE pilot](#526--s5v-nope-pilotpe-对-iidbelow-完全不必要对-far-无救2026-07-07-晚) — ⚠️ 初步结论作废,见 §5.27
 - [**§5.27 4-point PE + `_rev_pad` bugfix**](#527--s5w-pe-4-点全对照--_rev_pad-bug-修复rope-在-far-上真的破-ceiling2026-07-08-中午) — **RoPE FAR 3.5→24.5%**,B1 fix PE 方向重新验证 ⭐
+- [**§5.28 Archive audit(全部 rev_width=4 ckpt 重跑)**](#528--s5x-archive-audit-_rev_pad-bug-影响的全部历史-ckpt-重跑2026-07-08-下午) — **grok-a 是 winner(FAR 17%),small 模型 FAR 26%**,§5.16-5.21 多个结论 revision ⭐⭐
 
 ### 📚 参考章节(§6-§13)
 
@@ -2002,6 +2003,8 @@ compositional coverage: 每个 subskill 都单独教 ✓ (fmt_M/N/O 都有)
 
 ### 5.16 · S5.m 3-way × 2-scale wide 大对照：v6.2 → v6.3 "双 gate 模型"（2026-07-03 下午）
 
+> ⚠️ **本节 "双 gate 模型" 结论已被 §5.28 audit 推翻** —— pre-fix eval 下小模型 IID 卡 86% 是 `_rev_pad` bug 假象。Post-fix:小模型 IID 100%,FAR 26.0%(比 5M 的 3.5% 高 7x),**capacity 越大 FAR 反而越差**(标准 regularization 曲线)。本节文字保留原样为 debug 触发脉络,数字请以 §5.28.a 表为准。
+
 > **动机**：v6.1 直接测过后（§5.15），用户 hunch 想扩到"训练 H=[5,100],测试 H=[2,500]"3-way (fmt_D vs N vs O) × 2-scale (0.79M vs 5M) 大对照。目标:
 > 1. 测 v6.1 "aux H 范围决定边界"在 5× 放大 H 分布下是否 hold
 > 2. 测 v6.2 "capacity 是 IID 上限" 假设(rev_width=4 让 task 复杂化)
@@ -2117,6 +2120,8 @@ OOD em ≈ capacity_gate × subskill_transfer_within_aux_range
 
 ### 5.17 · S5.n wide_O v2 depth 4×：v6.3 → v6.4 "subskill saturation curve"（2026-07-07 中午）
 
+> ⚠️ **本节 "saturation curve" 结论已被 §5.28 audit 推翻** —— v1/v2/v3/v4 NEAR 后修 bug 都是 100%,没有 depth 曲线。pre-fix 看到的 86→96.5→91→100 是 `_rev_pad` bug 对 strict-position 模型的差异性影响。真实规律:**只要 aux 覆盖 [2,200],NEAR 直接 100%,与 depth/uniq/rep 组合无关**。
+
 > **动机**：§5.16 wide_O 5M NEAR [101,200] em=86% —— 一直 open 的 crack。3 个假设(capacity 不够 / subskill 干扰 / rev_width 位级学不透)diagnose 后指向**aux depth per H 是隐藏参数**:
 > - fmt_O 原 setup（§5.14）:aux 12.5k/50H = **250/H** → NEAR-equivalent 100%
 > - wide_O（§5.16）:aux 12.5k/200H = **62/H** → NEAR 86%
@@ -2180,6 +2185,8 @@ GPT-4 训练数据 **两层都拉满** —— 覆盖极广 + 每 slot depth 极�
 - commit `7b0c70d` ✅ 2026-07-07 中午（exp(depth): S5.n wide_O v2 depth 4x — v6.3 → v6.4 saturation curve）
 
 ### 5.18 · S5.o wide_O v3 depth 8×：反直觉 dip（2026-07-07 下午）
+
+> ⚠️ **本节 "反直觉 dip" 结论已被 §5.28 audit 推翻** —— v3 NEAR 后修 bug = 100%,没有 dip。pre-fix 91% 是 bug 对 strict-position 大模型的影响。
 
 > **动机**:v6.4 saturation curve 预测 depth 500/H → 98-99%。**直接测**。
 
@@ -2282,6 +2289,8 @@ subskill_transfer_within_aux_range
 
 ### 5.20 · 4 次 wide_O 完整对照表(所有段 × 所有指标)（2026-07-07 下午,archive）
 
+> ⚠️ **本表数字 pre-fix**,请以 §5.28.a 为准。IID/BELOW 数字 stable(baseline robust to bug),但 NEAR 全部 pre-fix 86-96.5-91-100 → post-fix 全 100(bug 假象),FAR 数字有 3-4 pp drift。`digit_acc` 全部作废(pre-fix ~26%,post-fix 都 100%)。本表**保留原状**留作 debug 触发脉络记录。
+
 > 4 个 wide_O 变体 (v1/v2/v3/v4) 各 4 段 (IID/BELOW/NEAR/FAR) × 所有指标 (em/digit/per-step) 的完整 archive。**下次翻笔记想找具体某个数字,来这里查表**。
 
 #### 实验 setup 汇总
@@ -2366,6 +2375,8 @@ v4  200k n_train   125    44   100.0% ⭐  ▮▮▮▮▮▮▮▮▮▮▮ 全
 ---
 
 ### 5.21 · S5.q Grokking 试验(Grok-A):Bear + IID 反降(2026-07-07 傍晚)
+
+> ⚠️ **本节 "grok-a IID 反降到 76.5%,grokking flop" 结论已被 §5.28 audit 完全推翻** —— pre-fix 的 76.5% 是 `_rev_pad` bug 假象。Post-fix:**grok-a IID = 100%,FAR = 17.0%(baseline 3.5% → 17,+13.5 pp,近 5x)**。grokking 参数(wd=0.5 + 100k iter)**是明确 winner,不是 flop**。见 §5.28.c revision 3。
 
 > **动机**:v6.5 double gate 加固后,只剩 FAR [201, 500] 未 unlock(6.5% noise floor)。**Grokking 是 paradigm 内唯一可能撬开"跨 aux 边界外推"的路径**。参考 Power 2022, Nanda 2023,尝试 weight_decay 0.5 + max_iters 100k。
 
@@ -2939,6 +2950,127 @@ RoPE FAR n=20 的 per-step 也在同一方向:two_h=50%, D=50%, r=45%, c=35% —
 - **改** `eval_cr.py`:修 `_rev_pad` late-binding bug
 - **新** `config/train_cr_wide_5m_O_v4_rope.py` + `train_cr_wide_5m_O_v4_alibi.py`
 - **新 ckpt**:`out-cr-wide-5m-O-v4-rope/ckpt.pt`(val_loss 0.1432 @ iter 16500),`out-cr-wide-5m-O-v4-alibi/ckpt.pt`(0.1433)
+
+---
+
+### 5.28 · S5.x Archive audit: **_rev_pad bug 影响的全部历史 ckpt 重跑**(2026-07-08 下午)
+
+> **动机**:§5.27 揭出 `_rev_pad` 3→4 late-binding bug 影响所有 fmt_O/D/N (rev_width=4) eval,即 §5.14 之后**所有**的 wide 系列结果。为了让 §5.20 archive、§5.16 双 gate、§5.21 grokking 结论对齐真实,把全部 10 个 rev_width=4 ckpt 用 fixed `_rev_pad` 重跑 4 段 eval,并把 pre/post 数字放一起对照。
+
+#### §5.28.a · 全表对比(所有 10 个 fmt_O/D/N ckpt,post-fix,n=200/split,greedy)
+
+| Model | IID [5,100] | BELOW [2,4] | NEAR [101,200] | FAR [201,500] | 备注 |
+|---|---|---|---|---|---|
+| **wide-O v1** (5M, 125 uniq × 22 rep) | 100.0% | 100.0% | 100.0% | **3.0%** | §5.16 wide_O 首次 |
+| **wide-O v2** (5M, 500 uniq × 22 rep) | 100.0% | 100.0% | 100.0% | **5.0%** | §5.17 depth 4× |
+| **wide-O v3** (5M, 1000 uniq × 22 rep) | 100.0% | 100.0% | 100.0% | **3.0%** | §5.18 depth 8× |
+| **wide-O v4** (5M, 125 uniq × 44 rep) | 100.0% | 100.0% | 100.0% | **3.5%** | §5.19 rep 2× ⭐ v6.5 |
+| **wide-O grok-a** (5M, v4+wd=0.5, 100k iter) | 100.0% | 100.0% | 100.0% | **17.0%** | §5.21 grokking ⭐ |
+| **wide-O-small** (0.79M, wide_O v1 数据) | 100.0% | 100.0% | 100.0% | **26.0%** | §5.16 small 双 gate 声称 |
+| **wide-D** (5M, fmt_D CoT no aux) | 100.0% | 54.0% | 10.5% | 0.0% | §5.16 fmt_D 5M |
+| **wide-N** (5M, fmt_N multitask) | 100.0% | 100.0% | 43.5% | 0.0% | §5.16 fmt_N 5M |
+| **wide-D-small** (0.79M) | 100.0% | 100.0% | 5.5% | 0.0% | §5.16 fmt_D small |
+| **wide-N-small** (0.79M) | 100.0% | 100.0% | 38.0% | 1.0% | §5.16 fmt_N small |
+| **wide-O v4 + NoPE** (§5.26) | 100.0% | 100.0% | 100.0% | **8.5%** | §5.27 4-point |
+| **wide-O v4 + RoPE** ⭐ | 100.0% | 100.0% | 100.0% | **24.5%** | §5.27 4-point |
+| **wide-O v4 + ALiBi** | 100.0% | 100.0% | 100.0% | **7.0%** | §5.27 4-point |
+
+#### §5.28.b · 对比 pre-fix 数字(§5.20 archive 老表)与 post-fix 的差异
+
+| Model | pre-fix IID/NEAR/FAR | **post-fix IID/NEAR/FAR** | 主要修正 |
+|---|---|---|---|
+| wide-O v1 | 100 / **86** / 4 | 100 / **100** / 3.0 | NEAR +14 pp:所谓 "depth 不够 NEAR 差" 是 bug |
+| wide-O v2 | 100 / **96.5** / 9 | 100 / **100** / 5.0 | NEAR +3.5 pp,FAR -4 pp |
+| wide-O v3 | 100 / **91** / 5.5 | 100 / **100** / 3.0 | NEAR +9 pp:"反直觉 dip" 也是 bug |
+| wide-O v4 | 100 / 100 / 6.5 | 100 / 100 / 3.5 | FAR -3 pp |
+| **wide-O grok-a** | **76.5** / ? / ? | **100** / 100 / **17.0** ⭐ | IID +23.5 pp, FAR +? pp:**grokking 参数是 winner,不是 flop** |
+| **wide-O-small** | **86 IID cap 声称** / ? / 4? | **100** / 100 / **26.0** ⭐ | 小模型 FAR 竟然 7x 高于 5M!"双 gate" 全错 |
+| wide-D (5M) | ? / ? / 0 | 100 / 54 / 0 | BELOW 也就 54%,fmt_D 没 aux 是纯 subskill lookup |
+| wide-N (5M) | ? / ? / 0 | 100 / 44 / 0 | NEAR 44% 说明 multitask aux 有效但天花板远低于 fmt_O |
+
+#### §5.28.c · 3 个被 bug 掩盖的关键结论(revision)
+
+**Revision 1(§5.17-5.18):"depth 4x 是 saturation curve,depth 8x 反直觉 dip" 是 bug artifact**
+
+- Pre-fix:v1 NEAR 86% → v2 96.5% → v3 91% → v4 100%,曲线看着像 saturation + noise
+- Post-fix:v1/v2/v3/v4 **NEAR 全 100%**,完全 flat
+- 真实规律:**只要 rev_width=4 4 位模型看到 aux [2,200] 覆盖,NEAR 就直接 100% (subskill lookup 复用)**,depth/uniq/rep 组合都无区别
+- FAR 上四者也在 3-5% 波动,noise 级差异 — depth × rep 对 FAR **也**没有 first-order 影响
+
+**Revision 2(§5.16):"小模型 IID 上不去(双 gate 模型)" 是 bug artifact,实际相反**
+
+- Pre-fix:wide-O-small (0.79M) IID cap 86%,声称 "capacity 不足 fit lookup"
+- Post-fix:wide-O-small (0.79M) IID **100%**,而且 FAR **26.0% 高于 5M v4 的 3.5%(7x)**
+- **正确 picture**:小模型算力紧,反而**不得不学 relative pattern**,得到 stronger extrapolation。大 (5M) 模型 memorize IID range 太深,把 FAR embedding drift 学掉了
+- 这是标准 "regularization by capacity" — 类似 grokking / early stop / weight decay 的效果
+- **"double gate" 假说 falsify;真实是 "capacity 越大 FAR 越低"**
+
+**Revision 3(§5.21):grokking (wd=0.5 + 100k iter) 是明确 winner,不是 flop**
+
+- Pre-fix:grok-a IID **76.5%**,推断 "grokking 参数把模型往回打了"
+- Post-fix:grok-a IID **100%**,FAR **17.0%** (baseline 3.5% → 17,+13.5 pp,5x)
+- 真实规律:**长训 + 强 wd = 强 regularization → FAR extrapolation 明显好**。76.5% 是 bug 拉的假象,让实验被误判成 flop
+- **grok 与 RoPE 独立正交** —— grok-a 17% + RoPE (learned PE) 3.5% 的 5x 差异都存在,叠加应该 additive 或更强
+- **B1 fix PE + B2 强 regularization = 两条独立有效的 FAR lever**(此前认为都 falsified)
+
+#### §5.28.d · Ranking:"哪些 lever 真正 lift FAR"
+
+| Lever | FAR em | vs baseline (v4 3.5%) | ~cost |
+|---|---|---|---|
+| baseline (learned PE, 5M, 20k iter) | 3.5% | — | 1× |
+| ALiBi (§5.27) | 7.0% | +3.5 pp (2×) | 1× |
+| NoPE (§5.26) | 8.5% | +5 pp (2.4×) | 1× |
+| **grokking (§5.21 + audit)** | **17.0%** | **+13.5 pp (4.9×)** ⭐ | 5× iter |
+| **wide-O-small (0.79M, §5.16 revision)** | **26.0%** | **+22.5 pp (7.4×)** ⭐⭐ | 0.15× params |
+| **RoPE (§5.27)** | **24.5%** | **+21 pp (7×)** ⭐⭐ | 1× |
+| BoN N=10 on v4 (§5.22) | 9.5% | +6 pp (2.7×) | 10× inference |
+| RoPE + grok(未测,预测) | ~40%? | +37 pp? | 5× iter |
+| RoPE + small(未测,预测) | ~40-50%? | +37-47 pp? | 0.15× params |
+
+**Top 3 lever(post-audit)**:
+1. **wide-O-small (小容量)**:0.15× 参数,7.4× FAR
+2. **RoPE (相对位置)**:同参数,7× FAR
+3. **grokking (强 wd + 长训)**:5× 训练成本,4.9× FAR
+
+**其中(1)、(2)机制正交,可以叠加;(3)与 (1)(2) 也可能叠加**。这是 v6.5 paradigm 真正的 update。
+
+#### §5.28.e · Methodology meta-lesson
+
+- **一个 bug 潜伏 15 天**(§5.14 到 §5.27),污染 6 个实验章节。原因:baseline 恰好 robust,自查 loop 没触发。
+- **stricter-arch ablation 是 pipeline audit 工具** —— RoPE 强 position sensitivity 撞出 bug。以后做 ablation 优先跑 strict 变体来 audit。
+- **`digit_acc` 数字 pre-fix 全都 ~26%,post-fix 全都 100%**。之前 6 个章节里的 digit_acc 应视为 noise,不表达真实 char-level accuracy。em 数字大部分可信(baseline robust),但 §5.16-5.21 的 NEAR/FAR 结论需要按本节 revision 表看。
+- **老 archive 表(§5.20)不删,加 correction pointer 到 §5.28**。学习历史价值:那张表是 debug 触发点。
+
+#### §5.28.f · 影响的 archive/结论 pointer
+
+| 老章节 | 老 claim | Post-audit revised claim |
+|---|---|---|
+| §5.14 fmt_O 100% em | fmt_O 是 v6.0 recipe | ✅ 依旧成立(IID/BELOW/NEAR 是 100%) |
+| §5.15 fmt_P super-OOD 崩 | fmt_O 靠 subskill lookup | ✅ 依旧成立(FAR ~3-5%) |
+| **§5.16 3-way × 2-scale 双 gate** | 小模型 IID cap 86% | ❌ **小模型 IID 100% FAR 26%,大模型 FAR 更差** |
+| **§5.17 depth 4x saturation** | v2 NEAR 96.5%(升) | ❌ **v2 NEAR 100%,与 v1 无区别** |
+| **§5.18 depth 8x dip** | v3 NEAR 91%(反直觉) | ❌ **v3 NEAR 100%,dip 是 bug** |
+| §5.19 v4 rep 2× | v4 NEAR 100% ⭐ | ✅ 100% 数字仍对,但 "rep 独有" 立不住(v1-v3 同为 100%) |
+| §5.20 4-way archive | Rep is dominating | ⚠️ archive 表 IID/BELOW OK,NEAR 全变 100,FAR 数字有小 drift |
+| **§5.21 grok-a** | IID 76.5% (grok 参数 flop) | ❌ **IID 100% FAR 17%(grok 是 winner)** |
+| §5.22 BoN v4 | v4 FAR 6.5→9.5 +3 pp | ⚠️ v4 FAR 是 3.5(post-fix),BoN 提升数字重跑才能定 |
+| §5.23-5.25 attention viz + ablation | L2=D L3=r layer split | ✅ 依旧成立(attention pattern 独立于 prompt format) |
+| §5.26 NoPE pilot | NoPE 不 essential | ⚠️ 4 段数字 pre-fix 有偏,但方向(NoPE robust)是对的,IID/BELOW/NEAR 都 100 |
+
+#### §5.28.g · Next-step 优先级(post-audit)
+
+按 lever 有效性:
+
+1. **RoPE + grokking + long training**(20k → 100k 或 200k iter,wd=0.5)—— stack 三个正交 lever,预测 FAR 40-60%
+2. **small + RoPE**(0.79M + RoPE,~0.15× params × RoPE)—— 测 capacity vs relative PE 是否可加
+3. **v4 数据 + RoPE + aux 扩到 [201,500]**(补 aux 覆盖 FAR)—— 直接 attack FAR bottleneck
+4. §5.22 BoN 重跑 on RoPE ckpt —— test-time compute × arch stack
+5. 收官 §14 Grand Summary v6.6 定型
+
+#### 新增产物
+
+- 重跑:10 个历史 ckpt × 4 段 = 40 evals with fixed `_rev_pad`,数字表载入 §5.28.a/b
+- 无新代码 —— eval_cr.py 的 fix 已在 §5.27 commit 里
 
 ---
 

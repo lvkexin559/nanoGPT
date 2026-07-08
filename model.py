@@ -26,6 +26,45 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
+def _rope_precompute(head_dim, max_seq_len, theta=10000.0):
+    """Precompute RoPE cos/sin tables.
+    Returns cos, sin of shape (max_seq_len, head_dim//2)."""
+    assert head_dim % 2 == 0, f"RoPE requires even head_dim, got {head_dim}"
+    freqs = 1.0 / (theta ** (torch.arange(0, head_dim, 2).float() / head_dim))  # (head_dim//2,)
+    t = torch.arange(max_seq_len).float()
+    angles = torch.outer(t, freqs)  # (T, head_dim//2)
+    return angles.cos(), angles.sin()
+
+
+def _apply_rope(x, cos, sin):
+    """Apply RoPE rotation to x of shape (B, nh, T, head_dim).
+    cos/sin: (T, head_dim//2) precomputed. Uses the "interleaved-pair"
+    rotation: (x_2i, x_2i+1) -> (x_2i*cos - x_2i+1*sin, x_2i*sin + x_2i+1*cos)."""
+    T = x.shape[-2]
+    cos = cos[:T].unsqueeze(0).unsqueeze(0)  # (1, 1, T, hd/2)
+    sin = sin[:T].unsqueeze(0).unsqueeze(0)
+    x1 = x[..., ::2]   # even indices
+    x2 = x[..., 1::2]  # odd indices
+    y1 = x1 * cos - x2 * sin
+    y2 = x1 * sin + x2 * cos
+    y = torch.stack([y1, y2], dim=-1).flatten(-2)
+    return y
+
+
+def _alibi_slopes(n_head):
+    """ALiBi slopes: closest power-of-2 first, then interpolate for non-power-of-2."""
+    def _pow2_slopes(n):
+        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+        return [start * (start ** i) for i in range(n)]
+
+    if math.log2(n_head).is_integer():
+        return _pow2_slopes(n_head)
+    closest = 2 ** math.floor(math.log2(n_head))
+    slopes = _pow2_slopes(closest)
+    extra = _pow2_slopes(2 * closest)[0::2][: n_head - closest]
+    return slopes + extra
+
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -41,6 +80,7 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.pe_type = config.pe_type
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
@@ -48,6 +88,26 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+
+        head_dim = config.n_embd // config.n_head
+
+        # RoPE: precompute cos/sin, register as buffer (moves with .to(device))
+        if self.pe_type == "rope":
+            cos, sin = _rope_precompute(head_dim, config.block_size, theta=config.rope_theta)
+            self.register_buffer("rope_cos", cos, persistent=False)
+            self.register_buffer("rope_sin", sin, persistent=False)
+
+        # ALiBi: precompute per-head slope + full causal+bias attention mask
+        if self.pe_type == "alibi":
+            slopes = torch.tensor(_alibi_slopes(config.n_head), dtype=torch.float32)  # (nh,)
+            # dist matrix: dist[i,j] = i - j (>=0 on lower triangle after causal mask)
+            pos = torch.arange(config.block_size)
+            dist = (pos.unsqueeze(1) - pos.unsqueeze(0)).float().abs()  # (T, T)
+            # per-head bias = -slope * dist ; upper triangle set to -inf so it also carries causal mask
+            bias = -slopes.view(-1, 1, 1) * dist.unsqueeze(0)  # (nh, T, T)
+            causal_mask = torch.triu(torch.ones(config.block_size, config.block_size, dtype=torch.bool), diagonal=1)
+            bias.masked_fill_(causal_mask.unsqueeze(0), float('-inf'))
+            self.register_buffer("alibi_mask", bias, persistent=False)  # (nh, T, T)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -58,14 +118,33 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
+        # RoPE: rotate q,k in place; v is not rotated (standard RoPE)
+        if self.pe_type == "rope":
+            q = _apply_rope(q, self.rope_cos, self.rope_sin)
+            k = _apply_rope(k, self.rope_cos, self.rope_sin)
+
+        # For ALiBi we slice the precomputed (nh, T_max, T_max) mask down to (nh, T, T)
+        # and pass it as attn_mask (which already includes causal masking).
+        attn_mask = None
+        is_causal = True
+        if self.pe_type == "alibi":
+            attn_mask = self.alibi_mask[:, :T, :T]  # (nh, T, T), broadcast over batch
+            is_causal = False  # our attn_mask already carries causal + bias
+
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=is_causal,
+            )
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            if self.pe_type == "alibi":
+                att = att + self.alibi_mask[:, :T, :T].unsqueeze(0)
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -114,10 +193,24 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    # NoPE experiment (§5.26): if False, skip positional embedding entirely
-    # and let the causal mask alone carry position info. Backward-compatible:
-    # default True keeps original nanoGPT behavior.
+    # PE ablation (§5.26 pilot + §5.27 full 4-point). Values:
+    #   "learned" — original nanoGPT (learned absolute PE, wpe embedding)
+    #   "none"    — NoPE (§5.26): no PE, causal mask alone carries position
+    #   "rope"    — Rotary Position Embedding (rotate q,k)
+    #   "alibi"   — Attention with Linear Bias (bias in attention scores)
+    pe_type: str = "learned"
+    rope_theta: float = 10000.0  # base for RoPE frequencies (only used if pe_type='rope')
+    # Legacy flag (kept for backward-compat with §5.26 ckpts that were saved
+    # before pe_type was introduced). use_pos_emb=False → pe_type='none'.
     use_pos_emb: bool = True
+
+    def __post_init__(self):
+        # Legacy backward-compat: old use_pos_emb=False ckpts have no pe_type
+        # field, so pe_type keeps default "learned" — override to "none".
+        if not self.use_pos_emb and self.pe_type == "learned":
+            self.pe_type = "none"
+        assert self.pe_type in ("learned", "none", "rope", "alibi"), (
+            f"pe_type must be one of learned/none/rope/alibi, got {self.pe_type!r}")
 
 class GPT(nn.Module):
 
@@ -127,14 +220,14 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
-        # Optionally skip positional embedding (§5.26 NoPE experiment)
+        # Learned absolute PE is only created for pe_type="learned"
         transformer_dict = dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         )
-        if config.use_pos_emb:
+        if config.pe_type == "learned":
             transformer_dict["wpe"] = nn.Embedding(config.block_size, config.n_embd)
         self.transformer = nn.ModuleDict(transformer_dict)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -160,7 +253,7 @@ class GPT(nn.Module):
         For non-embedding count (default), the position embeddings get subtracted.
         The token embeddings would too, except due to the parameter sharing these
         params are actually used as weights in the final layer, so we include them.
-        NoPE mode (no wpe): non_embedding count matches total (nothing to subtract).
+        Non-learned PE modes (none/rope/alibi): no wpe to subtract, count is total.
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding and hasattr(self.transformer, "wpe"):
@@ -182,12 +275,13 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        if self.config.use_pos_emb:
+        if self.config.pe_type == "learned":
             pos = torch.arange(0, t, dtype=torch.long, device=device)
             pos_emb = self.transformer.wpe(pos)  # (t, n_embd)
             x = self.transformer.drop(tok_emb + pos_emb)
         else:
-            # NoPE: skip positional embedding, causal mask alone carries position info
+            # No additive PE at the embedding layer for none / rope / alibi.
+            # RoPE and ALiBi inject position info inside each attention head.
             x = self.transformer.drop(tok_emb)
         for block in self.transformer.h:
             x = block(x)

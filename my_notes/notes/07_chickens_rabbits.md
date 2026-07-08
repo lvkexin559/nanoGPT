@@ -75,7 +75,8 @@
 - [§5.22 BoN N=10](#522--s5r-best-of-n-验证paradigm-ceiling-6510-pp-margin2026-07-07-下午) — verifier-guided BoN 只 +3 pp FAR,ceiling confirmed
 - [§5.23-§5.24 Attention viz + head split](#523--s5s-attention-pattern-可视化mechanism-level-诊断推翻原-diffuse-假设2026-07-07-晚) — L2H5 = 97.6% H attender(correlation)
 - [§5.25 Layer-level ablation](#525--s5u-ablation-study推翻l2h5-essential-假设发现-layer-level-分工2026-07-07-晚) — head 冗余,L2=D subskill,L3=r subskill(causation)
-- [§5.26 NoPE pilot](#526--s5v-nope-pilotpe-对-iidbelow-完全不必要对-far-无救2026-07-07-晚) — **B1 fix PE 方向被证伪**,资源集中到 B2 RL
+- [§5.26 NoPE pilot](#526--s5v-nope-pilotpe-对-iidbelow-完全不必要对-far-无救2026-07-07-晚) — ⚠️ 初步结论作废,见 §5.27
+- [**§5.27 4-point PE + `_rev_pad` bugfix**](#527--s5w-pe-4-点全对照--_rev_pad-bug-修复rope-在-far-上真的破-ceiling2026-07-08-中午) — **RoPE FAR 3.5→24.5%**,B1 fix PE 方向重新验证 ⭐
 
 ### 📚 参考章节(§6-§13)
 
@@ -2826,6 +2827,118 @@ layer-level (§5.25): L2 = D subskill 层,L3 = r subskill 层
 - 改:`train.py` +5 行,把 `use_pos_emb` 加入 `model_args` dict
 - 新:`config/train_cr_wide_5m_O_v4_nope.py` NoPE ablation config
 - ckpt:`out-cr-wide-5m-O-v4-nope/ckpt.pt`(val_loss 0.1433 @ iter 18500)
+
+> **⚠️ §5.26 数字勘误(2026-07-08)**:pilot 期间 eval 用的是有 bug 的 `_rev_pad`(见 §5.27),导致 prompt 被截成 3 位喂 4 位模型。NoPE 在 IID/BELOW/NEAR 恰巧 robust,但 FAR 反映的是模型对 malformed prompt 的行为,不是真实 extrapolation。**修 bug 后 NoPE 4 段 = 100/100/100/8.5**(比原 baseline 好 +5 pp)。§5.26 关于 "PE 不 essential" 的结论**部分作废**,需要看 §5.27 4-point full comparison 才是真话。
+
+---
+
+### 5.27 · S5.w PE 4 点全对照 + `_rev_pad` bug 修复:**RoPE 在 FAR 上真的破 ceiling**(2026-07-08 中午)
+
+> **动机**:§5.26 pilot 断言 "B1 fix PE 方向被证伪" 是**基于 bug 的 eval**。要拿到 clean 结论,补 RoPE + ALiBi 两点做 4 point full comparison,顺路 audit 一遍 eval_cr 得到的 baseline pretty numbers。
+
+#### §5.27.a · pre-existing `_rev_pad` bug(所有 fmt_O/D/L/M/N/P eval 都 affected)
+
+**根源**:`eval_cr.py` 里的 `_rev_pad` 用了 Python late-binding trap:
+
+```python
+_REV_WIDTH = 3  # module init
+
+def _rev_pad(n: int, width: int = _REV_WIDTH) -> str:  # ← 陷阱在这
+    return str(n).zfill(width)[::-1]
+```
+
+Python 只在**函数定义时**求值默认参数一次 —— 后面 `set_rev_width(4)` 再改 module 全局,`_rev_pad(n)`(不传 width)还是拿到 def 时抓的旧值 3。
+
+**症状**:所有 fmt_O(rev_width=4)eval 里的 prompt 都被写成 **3 位**:
+- `build_prompt(12, 24, "O")` 应该 `"H=2100 F=4200\n"`(4 位)
+- 实际 `"H=210 F=420\n"`(3 位)
+
+**为什么没早发现**:baseline / NoPE / ALiBi 模型对 3 位 prompt **意外 robust** —— 输出仍然是 4 位并且解析出正确 (c, r)。所以 §5.14 以来 IID/BELOW/NEAR 都刷到 100%,报表看着好好的。**只有 RoPE 因为对 position 更 strict,把 bug 撞出来了**(RoPE 3 位 prompt 时输出全乱)。
+
+**Fix**:改成 late-binding:
+
+```python
+def _rev_pad(n: int, width: int | None = None) -> str:
+    w = _REV_WIDTH if width is None else width
+    return str(n).zfill(w)[::-1]
+```
+
+**Bug 影响面**:
+- IID/BELOW/NEAR 老数字大致 stable(4 段 em 全 100%,em 判定基于最终答案,不 sensitive prompt 格式),但 `digit_acc` 全都从 `~26%` 恢复到 `100%`(digit_acc 之前是 buggy 的假象)
+- FAR 数字大幅变化(见下表),因为 FAR 是 extrapolation,PE 差异被放大
+- **§5.20 archive 表里 IID/BELOW/NEAR em 数字仍可信,digit_acc 需 discount,FAR em 数字应以本节 corrected 版为准**
+
+#### §5.27.b · 4-point full comparison(修 bug 后,n=200/split, greedy)
+
+| Split | Baseline (learned PE) | NoPE | **RoPE** ⭐ | ALiBi |
+|---|---|---|---|---|
+| IID [5,100] | 100.0% | 100.0% | 100.0% | 100.0% |
+| BELOW [2,4] | 100.0% | 100.0% | 100.0% | 100.0% |
+| NEAR [101,200] | 100.0% | 100.0% | 100.0% | 100.0% |
+| **FAR [201,500]** | **3.5%** | **8.5%** | **24.5%** | **7.0%** |
+| digit_acc FAR | 85.7% | 86.9% | 82.0% | 80.9% |
+| val_loss (best) | 0.1435 | 0.1433 | 0.1432 | 0.1433 |
+
+RoPE FAR n=20 的 per-step 也在同一方向:two_h=50%, D=50%, r=45%, c=35% —— 比 baseline (10-30%) 高一大截,不是 fluke。
+
+#### §5.27.c · 3 个关键 finding
+
+**Finding 1(最重要):RoPE 把 FAR ceiling 从 3.5% 撕到 24.5%,+21 pp**
+
+- learned absolute PE 对训练时没见过的 position(H>100 → 序列比训练时长/位置分布不同)是 UNK-vector,**放大** OOD 崩塌
+- RoPE 只 encode **相对位置**(rotate q,k),自然外推到 H=500 的 prompt 也不见过的绝对位置
+- ALiBi 也是相对位置,但只是 attention score 上的线性 bias,表现力不如 RoPE
+
+**Finding 2:NoPE 也比 baseline 好(+5 pp FAR)**
+
+- 与 Kazemnejad et al. 2023 一致:causal mask 提供隐式位置信息,NoPE 在 short-range extrapolation 上完胜 learned absolute PE
+- 但 NoPE 天花板明显低于 RoPE —— 显式 relative encoding 比 "自己 emerge" 强
+
+**Finding 3:val_loss 完全看不出这个差异**
+
+- 4 个模型 val_loss 都在 0.1432-0.1435 的 noise 内
+- val_loss 是 teacher-forced random-window,主要考察 IID 分布内 next-token 能力
+- **PE 差异只在 autoregressive 长距离 generation 才 accumulate 出来**,这符合 §5.22 BoN 类似的 "generation vs eval loss decoupling"
+
+#### §5.27.d · 对 v6.5 paradigm ceiling 的 update
+
+| 阶段 | FAR em ceiling | 相对 baseline 提升 |
+|---|---|---|
+| baseline (learned PE, greedy) | 3.5% | — |
+| BoN N=10 (§5.22) | 9.5% | +6 pp |
+| **RoPE (§5.27)** | **24.5%** | **+21 pp** ⭐ |
+| RoPE + BoN N=10(未测) | ~35-45% 预测 | 可能更高 |
+| ceiling asymptote | ~50-70% 预测 | 需要 data 覆盖 FAR |
+
+**v6.5 macro 结论 needs revision**:
+- ❌ 原结论:"arch 不重要,ceiling 在训练信号"
+- ✅ 新结论:**PE choice 是 first-order lever,RoPE 单独就能 6-7x FAR em**
+- ⚠️ 但 RoPE alone 也远达不到 IID 的 100%,所以 "数据/训练信号覆盖 FAR" 仍是 complementary 方向,不是替代
+
+**B1 fix PE 方向从"被证伪"→"是有效的"**:
+
+| 方向 | v6.5 macro | pre-fix §5.26 | **post-fix §5.27** |
+|---|---|---|---|
+| B1 fix PE / attention arch | ❌ | ❌❌ (buggy 结论) | ✅ **RoPE 有效,+21 pp** |
+| B2 RL outcome reward | ✅ | ✅ | ✅ 仍是 top 方向 |
+| B3 fix architecture | ❌ | ❌ | ❌ |
+| 数据分布覆盖 | ✅ | ✅ | ✅ |
+| Tool use | ✅ | ✅ | ✅ |
+
+#### §5.27.e · Methodology meta-lessons
+
+1. **默认参数陷阱**:`def f(x=GLOBAL)` 只在 def 时求值,后面 `set_global(...)` 改不了。这个 bug 潜伏了 8 天没被发现,因为 baseline 模型意外 robust。
+2. **RoPE = 天然 bug 探测器**:strict-position 模型 fail 早,把 pipeline 里的 assumption 全都暴露出来。做 arch sweep 时优先跑 stricter 变体,能 early-catch 数据/eval pipeline bug。
+3. **val_loss 无法 detect gen 崩溃**:teacher-forced loss 一样,generation 差 21 pp。想真评估 arch,必须 autoregressive em,不能只看 val_loss。这是 §5.22 BoN 观察的加强版。
+4. **信任 baseline 有陷阱**:baseline 结果 pretty ≠ eval pipeline correct。要靠 ablation model 撞出来。
+
+#### §5.27.f · 新增产物
+
+- **改** `model.py`:`GPTConfig` 加 `pe_type` (learned/none/rope/alibi) + `rope_theta`,`CausalSelfAttention` 加 RoPE 旋转 + ALiBi bias 分支,兼容 flash attention & 手动 attention 两条 path
+- **改** `train.py`:`model_args` 传 `pe_type` + `rope_theta`,resume 时保留
+- **改** `eval_cr.py`:修 `_rev_pad` late-binding bug
+- **新** `config/train_cr_wide_5m_O_v4_rope.py` + `train_cr_wide_5m_O_v4_alibi.py`
+- **新 ckpt**:`out-cr-wide-5m-O-v4-rope/ckpt.pt`(val_loss 0.1432 @ iter 16500),`out-cr-wide-5m-O-v4-alibi/ckpt.pt`(0.1433)
 
 ---
 

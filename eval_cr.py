@@ -56,9 +56,17 @@ def set_rev_width(w: int) -> None:
     _REV_WIDTH = w
 
 
-def _rev_pad(n: int, width: int = _REV_WIDTH) -> str:
-    """8 -> '008' -> '800'. Mirrors prepare.py.rev_pad."""
-    return str(n).zfill(width)[::-1]
+def _rev_pad(n: int, width: int | None = None) -> str:
+    """8 -> '008' -> '800'. Mirrors prepare.py.rev_pad.
+    Bugfix (§5.27): use late-binding for width so `set_rev_width(w)` at runtime
+    actually takes effect. The previous signature `width: int = _REV_WIDTH`
+    captured the module-init value (3) at function definition time and ignored
+    later `set_rev_width` updates — that meant every fmt_O/D/L/M/N/P eval since
+    §5.14 (rev_width=4 data) silently generated 3-digit prompts. Most trained
+    models were empirically robust to this mismatch so em scores looked fine,
+    but the RoPE model (§5.27) exposed the bug by not being robust."""
+    w = _REV_WIDTH if width is None else width
+    return str(n).zfill(w)[::-1]
 
 
 def _unrev_int(s: str) -> int:

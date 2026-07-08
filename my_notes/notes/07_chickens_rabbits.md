@@ -81,6 +81,7 @@
 - [**§5.29 RoPE + Grokking stack**](#529--s5y-rope--grokking-stackfar-35--900-super-multiplicativeparadigm-ceiling-官方破2026-07-08-下午) — **FAR 3.5% → 90.0%,super-multiplicative synergy,paradigm ceiling 官方破** ⭐⭐⭐
 - [**§5.30 Small + RoPE + Grok(负结果)**](#530--s5z-small-079m--rope--grokcapacity-是-first-order-requirement越小越好-假说-falsify2026-07-08-下午) — **small stack FAR 19%,"越小越好" 假说 falsify**,capacity 是 first-order requirement
 - [**§5.31 FAR H-bucket 诊断**](#531--s5aa-ropegrok-的-far-按-h-分桶诊断90-不是均匀是邻域近满--远段-80两段2026-07-08-傍晚) — FAR 90% 拆解为 [201,300]=96.5% + [301,500]=~82%,`--h-buckets` CLI 参数
+- [**§5.32 BoN N=10 on RoPE+Grok**](#532--s5ab-bon-n10-stack-on-ropegrok-ckpttest-time-compute-是-additive-lever能-close-远段-4-7-pp2026-07-08-傍晚) — BoN 远段 +7.5 pp lift,全 FAR 87.3% → 91.3%,test-time compute 是 additive lever
 
 ### 📚 参考章节(§6-§13)
 
@@ -3337,6 +3338,67 @@ python eval_cr.py --ckpt <path> --data-dir <path> \
 
 - **改** `eval_cr.py`:加 `--h-buckets "a-b,c-d,e-f"` 参数 + 循环 + summary(约 25 行)
 - 无新 ckpt
+
+---
+
+### 5.32 · S5.ab BoN N=10 stack on RoPE+Grok ckpt:**test-time compute 是 additive lever,能 close 远段 4-7 pp**（2026-07-08 傍晚）
+
+> **动机**：§5.31 拆解 90% FAR = "邻域 96.5% + 远段 82%"。**问 BoN N=10 verifier(c+r=H, 2c+4r=F) 能不能把远段 82% 拉到 90%+?** 用 §5.29 RoPE+Grok stack ckpt + `--best-of-n 10 --temperature 0.7 --top-k 10` + 3-bucket sweep 直接测。
+
+#### §5.32.a · 3-bucket 结果(BoN N=10, seed=2001)
+
+| Bucket | Greedy(§5.31) | **BoN N=10** | Δ | avg_attempts |
+|---|---|---|---|---|
+| [201, 300] | 96.5% | **97.5%** | +1.0 pp | 1.27 |
+| [301, 400] | 81.0% | **88.5%** | **+7.5 pp** ⭐ | 2.28 |
+| [401, 500] | 84.5% | **88.0%** | +3.5 pp | 2.23 |
+| avg | 87.3% | **91.3%** | +4.0 pp | ~1.9 |
+
+**verifier_pass_rate == em**(每 bucket 都相等)—— 因为 verifier `c+r=H, 2c+4r=F` 唯一确定 (c, r),passing verifier 数学上等价 exact match。BoN 的 fallback 逻辑(N 次都不 pass 时用 first sample)在这里等价于"看 model 有没有至少 1 次做对"。
+
+#### §5.32.b · 3 个 finding
+
+**Finding 1:BoN 的 ROI 集中在"会做但 greedy 偶尔错"的困难段**
+
+- [201, 300] 已 96.5% 近满,BoN 只 +1 pp —— ceiling 效应,大部分 greedy 已经对,没多少空间
+- [301, 400] 从 81% → 88.5%,+7.5 pp —— 这段说明 stochastic sampling 里模型**有时能对**,只是 greedy 偶尔挑到错的那一个。verifier 把对的挑出来
+- [401, 500] 中间 +3.5 pp —— 部分能救,部分是"真不会"
+
+**Finding 2:avg_attempts 随任务难度线性上升**
+
+- 简单段(near-perfect):1.27 attempts —— 第 1 次就中的比例高
+- 困难段:~2.25 attempts —— 平均要试 2-3 次才能被 verifier 接受
+- **BoN 是自适应 compute 分配**:简单 sample 少花时间,困难 sample 多试几次
+
+**Finding 3:BoN 是 additive lever,不 super-multiplicative**
+
+- 与 §5.29 RoPE+Grok super-multiplicative(单 lever 各 +20 pp → 叠加 +86.5 pp)不同
+- BoN 上 stack:greedy 87.3% → BoN 91.3%,只 +4 pp(线性 additive)
+- 说明**test-time compute 和 arch × train-time lever 是"两种不同 mechanism"**:后者 unlock 模型内部 capability,前者只是 sampling policy 上的改进
+- BoN 天花板 = "模型至少一次能对的样本比例",一旦模型完全不会某样本,BoN 无用
+
+#### §5.32.c · 4 层 stack 天花板汇总
+
+| Config | FAR em [201, 500] | vs baseline | 备注 |
+|---|---|---|---|
+| baseline (learned PE, 20k iter) | 3.5% | 1× | v4 post-audit |
+| + RoPE + Grok stack | 90.0% | 26× | §5.29 |
+| **+ RoPE + Grok + BoN N=10** | **~91.3%** | **~26×** | 本节 |
+| **+ aux 覆盖扩到 [2, 500]** | ~100% 预测 | — | 未测,唯一剩下的 lever |
+
+**BoN 天花板增益有限(+1-4 pp)**,真正的最后 10% gap **只能靠数据覆盖**(aux 覆盖扩到 [2, 500]),而不是继续加 arch/train-time/inference-time lever。
+
+#### §5.32.d · v6.6.1 与 §14 收官前的最终 picture
+
+- **arch × train-time 双 lever(RoPE + Grok)**:把 FAR 从 3.5 → 90%,是 26× 的 super-multiplicative 突破
+- **test-time compute(BoN)**:再 +1-4 pp,linear additive
+- **数据覆盖(aux 范围)**:决定最后 10-20% gap 的位置(邻域 vs 远段)
+
+**加起来:arch × train-time × test-time × data 是四个正交 lever**,前两个已 super-multiplicative 突破,后两个 marginal / 决定 boundary。这是 v6.6.1 定型 picture。
+
+#### §5.32.e · 新增产物
+
+- 无新代码 / 新 ckpt,只跑一次 BoN eval
 
 ---
 

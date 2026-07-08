@@ -80,6 +80,7 @@
 - [**§5.28 Archive audit(全部 rev_width=4 ckpt 重跑)**](#528--s5x-archive-audit-_rev_pad-bug-影响的全部历史-ckpt-重跑2026-07-08-下午) — **grok-a 是 winner(FAR 17%),small 模型 FAR 26%**,§5.16-5.21 多个结论 revision ⭐⭐
 - [**§5.29 RoPE + Grokking stack**](#529--s5y-rope--grokking-stackfar-35--900-super-multiplicativeparadigm-ceiling-官方破2026-07-08-下午) — **FAR 3.5% → 90.0%,super-multiplicative synergy,paradigm ceiling 官方破** ⭐⭐⭐
 - [**§5.30 Small + RoPE + Grok(负结果)**](#530--s5z-small-079m--rope--grokcapacity-是-first-order-requirement越小越好-假说-falsify2026-07-08-下午) — **small stack FAR 19%,"越小越好" 假说 falsify**,capacity 是 first-order requirement
+- [**§5.31 FAR H-bucket 诊断**](#531--s5aa-ropegrok-的-far-按-h-分桶诊断90-不是均匀是邻域近满--远段-80两段2026-07-08-傍晚) — FAR 90% 拆解为 [201,300]=96.5% + [301,500]=~82%,`--h-buckets` CLI 参数
 
 ### 📚 参考章节(§6-§13)
 
@@ -3268,6 +3269,74 @@ lr_decay_iters = 100000   # 同步
 - **新** `config/train_cr_wide_small_O_v4_rope_grok.py`
 - **新 ckpt**:`out-cr-wide-small-O-v4-rope-grok/ckpt.pt`(val_loss 0.1440 @ iter 100k)
 - 训练时长 ~35 min(100k iter 0.79M 单卡)
+
+---
+
+### 5.31 · S5.aa RoPE+Grok 的 FAR 按 H 分桶诊断:**90% 不是均匀,是"邻域近满 + 远段 80"两段**（2026-07-08 傍晚）
+
+> **动机**：§5.29 报 5M+RoPE+grok stack FAR [201, 500] = 90%,但 FAR 是 300 宽的大范围,均值 90% 掩盖了内部分布。想知道**误差集中在哪一段**:是"刚出 aux 边界就崩(极边缘 fragility)"还是"越远越差(平滑衰减)"?给 eval_cr.py 加了个 `--h-buckets "a-b,c-d,e-f"` 参数,把 FAR 切三段跑。
+
+#### §5.31.a · CLI 改动
+
+`eval_cr.py` 加了 `--h-buckets` argparse 参数 + `main` 里一个 bucket 循环 block(约 25 行)。用法:
+
+```
+python eval_cr.py --ckpt <path> --data-dir <path> \
+  --h-buckets "201-300,301-400,401-500" --n 200 --seed 2001 --no-sanity
+```
+
+每桶独立 `eval_split`(seed=args.seed+i,保证不同桶采样不同 H 值),末尾打 per-bucket summary。
+
+#### §5.31.b · 3-bucket 结果(RoPE + Grok stack, n=200/bucket, greedy, seed 2001)
+
+| Bucket H range | em | digit | 2H | D | r | c |
+|---|---|---|---|---|---|---|
+| **[201, 300]** | **96.5%** | 99.5% | 100.0% | 96.5% | 96.5% | 96.5% |
+| **[301, 400]** | **81.0%** | 94.6% | 81.5% | 81.0% | 81.0% | 82.0% |
+| **[401, 500]** | **84.5%** | 95.1% | 90.5% | 85.0% | 85.0% | 84.5% |
+| avg | 87.3% | 96.4% | 90.7% | 87.5% | 87.5% | 87.7% |
+
+**注意**:seed 与 §5.29(seed=1004, avg 90%)不同,3-bucket avg 87.3% 与 90% 差在 ±3 pp noise 内,一致。
+
+#### §5.31.c · 3 个 finding
+
+**Finding 1:[201, 300] 段几乎 saturate (96.5%),不是 uniform 90%**
+
+- 这一段刚出 aux 覆盖 [2, 200] 边界 100 以内。RoPE 的 relative-position 在**邻域外推**里最强:算法能拿到 aux 训过的类似 H 值做 close-neighbor lookup
+- `2H` 步 **100%**,说明"乘 2" 这个最简单 subskill 已经真泛化到 [201, 300]
+- **推论**:真正 unlock 的是 "aux 边界 +100 以内",往后 subskill 依旧要外推,但没这么 clean
+
+**Finding 2:[301, 400] 是最差段 (81%)**
+
+- 距 aux 边界 100-200 —— algorithm 的 relative-position 归纳能力开始不稳
+- 与 [201, 300] 相比 4 步 subskill 一致 co-drop(2H 100 → 81.5, D 96.5 → 81, r 96.5 → 81, c 96.5 → 82)
+- **说明不是某一步 subskill 特别 fragile,是全链条一起打折** —— 每一步 ~81% 独立正确率;em 81% > (0.81)^4 = 0.43 说明四步错误 correlated(错的往往集中在同样的样本上,不是随机独立错误)
+
+**Finding 3:[401, 500] > [301, 400](非单调,+3.5 pp)**
+
+- 反直觉:预期越远越差,实际 [401, 500] 比 [301, 400] 略好
+- 3.5 pp 差异接近 noise 边缘(n=200 ±3-4 pp),可能不是 systematic
+- 若是 systematic,一个可能:[401, 500] 里三位数(如 456 = "6540")进位模式 vs [301, 400] 里的(如 356 = "6530"),模型 tokenwise 可能反而更 clean;或 aux 覆盖分布对特定 digit pattern 敏感
+- 单跑 1 seed 不足以定,留 open
+
+#### §5.31.d · v6.6.1 refine
+
+**§5.29 的 "FAR 90%" 更准确表述**:
+- **[201, 300](aux 边界外 +100 内):96.5% 近满**
+- **[301, 500](aux 边界外 100-300):~82%(缓慢下降到 plateau)**
+
+**paradigm ceiling 不是 "FAR 上 90%",而是 "aux 覆盖的邻域内可以 unlock 到近满(96%+),邻域外仍有 ~80% subskill lookup ceiling"**。这与 §5.15 fmt_P super-OOD test 观察一致:模型对 aux boundary 之外表现下降,只是 5M + RoPE + Grok 把这个 ceiling 从 3.5% 抬到 ~80%。
+
+#### §5.31.e · Next-step implications
+
+想拉 [301, 500] 也到近满,唯一路径:**aux 覆盖扩到 [201, 500]**(而不是靠更好的 arch/train-time)。这是 v6.5 早期 "数据覆盖决定 subskill 边界" 论点的最终 verification。
+
+或者 stack test-time compute (BoN N=10):可能 close 剩 20% gap 到 90%+。
+
+#### §5.31.f · 新增产物
+
+- **改** `eval_cr.py`:加 `--h-buckets "a-b,c-d,e-f"` 参数 + 循环 + summary(约 25 行)
+- 无新 ckpt
 
 ---
 

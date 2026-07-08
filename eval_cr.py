@@ -453,6 +453,10 @@ def main():
                         "layer L head H (semicolon-separated for multi-head "
                         "ablation). Tests essentiality (e.g. L2H5 as 'H reader' "
                         "identified in §5.24).")
+    p.add_argument("--h-buckets", default=None,
+                   help="Per-bucket H sweep: 'a-b,c-d,e-f' runs eval separately "
+                        "on each bucket and reports em per range. Overrides --split. "
+                        "Example: '201-300,301-400,401-500'. §5.31.")
     args = p.parse_args()
 
     # If best_of_n > 1 but temperature/top_k still greedy, warn user
@@ -528,6 +532,39 @@ def main():
           f"top_k={args.top_k}) ===")
 
     results = {}
+
+    # === §5.31 · Per-bucket H sweep: split a range into sub-ranges and
+    # report em per bucket so we can see WHERE the model breaks down. ===
+    if args.h_buckets is not None:
+        buckets = [
+            tuple(int(x) for x in pair.split("-"))
+            for pair in args.h_buckets.split(",")
+        ]
+        print(f"\n[buckets] {buckets}")
+        bucket_results = []
+        for i, (lo, hi) in enumerate(buckets):
+            print(f"\n[bucket {i+1}]  H in [{lo}, {hi}]")
+            res = eval_split(
+                model, encode, decode, fmt, lo, hi,
+                args.n, args.seed + i,
+                args.max_new_tokens, args.device, args.temperature, args.top_k,
+                show_samples=args.show_samples, name=f"bkt_{lo}_{hi}",
+                best_of_n=args.best_of_n,
+            )
+            bucket_results.append((lo, hi, res))
+        print()
+        print("=== per-bucket summary ===")
+        print(f"  fmt={fmt}  ckpt={args.ckpt}")
+        for lo, hi, res in bucket_results:
+            step_str = ""
+            if "step" in res and res["step"]:
+                step_str = "  per-step: " + " ".join(
+                    f"{k}={v:.1f}%" for k, v in res["step"].items())
+            print(f"  H in [{lo:>3d},{hi:>3d}]:  em={res['em']:5.1f}%  "
+                  f"digit={res['digit']:5.1f}%  "
+                  f"parse_fail={res['parse_fail']:4.1f}%{step_str}")
+        return
+
     if args.split in ("iid", "both"):
         print(f"\n[iid]  H in [{iid_h_min}, {iid_h_max}]")
         results["iid"] = eval_split(

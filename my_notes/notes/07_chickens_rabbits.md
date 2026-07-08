@@ -14,7 +14,8 @@
 
 ### 🚀 3 秒找到最想看的
 
-- [**§14 · Grand Summary(v6.3 收官)**](#14--grand-summary--project-收官v632026-07-06) — 8 天 arc 一段话总结,给"未来的自己"看
+- [**§14.2 · Grand Summary v6.7(最终收官)**](#142--grand-summary-v67--project-最终收官2026-07-08-傍晚final-) — 10 天 arc,4-lever stack + RL,FAR 3.5% → 99.5% ⭐
+- [§14 · Grand Summary(v6.3 archive)](#14--grand-summary--project-收官v632026-07-06-archive) — mid-project close-out 快照
 - [**顶部 TL;DR:术语速查 + 4 问 4 答**](#tldr--术语速查--4-问-4-答核心s5-系列收口2026-07-01-自答验证-grok) — 全项目术语字典 + 21 题 Q&A 的核心 5 题
 - [**§5.20 · 4 次 wide_O 完整对照表**](#520--4-次-wide_o-完整对照表所有段--所有指标2026-07-07-下午archive) — 查具体数字用
 - [**§12 · v6 评分卡**](#12--评分卡phase-5-毕业v6-版本) — Phase 5+ 毕业指标
@@ -97,13 +98,14 @@
 
 - [§12 v6 评分卡](#12--评分卡phase-5-毕业v6-版本)
 - [§13 后续延伸(4 类候选)](#13--后续延伸可选-v6-视角下的下一步)
-- [§14 Grand Summary(v6.3 定型)](#14--grand-summary--project-收官v632026-07-06)
+- [**§14.2 Grand Summary v6.7(final)**](#142--grand-summary-v67--project-最终收官2026-07-08-傍晚final-) ⭐
+- [§14 Grand Summary(v6.3 archive)](#14--grand-summary--project-收官v632026-07-06-archive)
 - [参考](#参考)
 
 ### 🎯 6 个"必读"入口(按 grokking 深度排序)
 
 1. **顶部 TL;DR** — 5 分钟全项目术语速查
-2. **§14 Grand Summary** — 10 分钟全 arc 总结
+2. **§14.2 Grand Summary v6.7** — 15 分钟完整 arc 总结(v3 → v6.7,FAR 3.5% → 99.5%)
 3. **§5.3 主对比表** — 12 行数字 side-by-side
 4. **§5.20 4-way wide_O archive** — v6.5 关键 3 数据点对照
 5. **§11 Round 4 Q&A(5 题)** — 方法论 meta-lessons
@@ -139,8 +141,12 @@
 - [x] 🎯 **S5.n wide_O v2 depth 4×**（2026-07-07 中午）✅ — **v6.3 → v6.4 saturation curve**：depth 62→250/H 让 NEAR 从 86%→96.5% (+10.5pp)，per-step 全 uniform 96.5% 再排除 rev_width 位级问题；subskill 精度是 saturation curve 不是 threshold(62/86 → 250/96.5 → 1000/100 有 diminishing return)；v6.4 公式:**subskill_transfer ≈ f(depth_per_H) × boolean(H∈aux)**；commit `7b0c70d`
 - [x] **S5.o wide_O v3 depth 8×**（2026-07-07 下午）— 反直觉 dip: n_train 800k → unique 500/H × rep 11,total 仍 5500 但 NEAR 反降到 91%（-5.5pp）,per-step 首次分化 → 质疑 v6.4 单变量假设,见 §5.18
 - [x] 🎯 **S5.p wide_O v4 rep 44** ⭐**用户设计**（2026-07-07 下午）✅ — **v6.4 → v6.5 refinement**：n_train 200k → unique 125/H × rep 44,total 仍 5500 但 **NEAR 冲到 100%**！干净对照 3 点(rep 11→91%, 22→96.5%, 44→100%)证明 **rep_per_sample 是主导变量,不是 total exposure**；per-step 全 uniform 100%；v6.5 公式:**subskill_transfer ≈ g(rep_per_sample) × boolean(H∈aux)**；直接 direct 印证 Chinchilla data×compute 平衡原则；commit `0d5766e`
+- [x] **S5.v-y NoPE / RoPE / ALiBi / Grok stack**(2026-07-07 到 07-08)—— PE 4-point + `_rev_pad` bugfix + **RoPE + Grok super-multiplicative → FAR 90%**;audit 翻案 §5.16/17/18/21 三条老结论;详见 §5.26-5.29
+- [x] **S5.aa-ab 诊断 lever**(2026-07-08 傍晚)—— `--h-buckets` CLI, FAR 90% 拆解为邻域 96.5% + 远段 82%;BoN N=10 stack 91.3%;详见 §5.31-5.32
+- [x] 🎯 **S5.ac RL fine-tune**(2026-07-08 傍晚)✅ — **REINFORCE + KL(β=0.02)+ GRPO-lite baseline,3 min GPU,600 步。FAR 87.3% → 99.5%**(其中 [301,400] 81 → 100),IID/BELOW/NEAR **零遗忘**;揭示 "90% ceiling" 是 sampling policy 问题,非 capability;post-training RL 是 verifier 任务的标配;commit `5c2f5a4`
+- [x] 🎉🎉 **§14.2 Grand Summary v6.7 最终收官** ✅ 2026-07-08 傍晚（10 天 arc 完整总结:v3 → v6.3 → v6.5 → v6.6 → **v6.7**;4-lever stack + RL;5 个新 finding(super-mult / val_loss blind / strict-arch audit / capacity floor / RL near-free);LLM 启示 v6.7 版更新;6 个方法论 lesson;"给未来自己"letter v6.7）
 
-**Project 状态**:**Phase 5+ 鸡兔同笼专题正式收官**（v6.3,19 commits,~3100 行笔记,已 push 到 [github.com/lvkexin559/nanoGPT](https://github.com/lvkexin559/nanoGPT)）
+**Project 状态**:**Phase 5+ 鸡兔同笼专题最终收官**(**v6.7**,~27 commits,~4700 行笔记,已 push 到 [github.com/lvkexin559/nanoGPT](https://github.com/lvkexin559/nanoGPT))
 
 **git 分支**：`hack/chickens-rabbits`（commit hash 见 §8）
 
@@ -4541,7 +4547,182 @@ Round 4: 全项目回看 → 方法论 meta-lesson  (v6 recipe + 可迁移性)
 
 ---
 
-## 14 · Grand Summary · Project 收官（v6.3，2026-07-06）
+## 14.2 · Grand Summary v6.7 · Project 最终收官（2026-07-08 傍晚，final）⭐
+
+> **这是 project 的最终版收官**。§14 (v6.3) 是 mid-project close-out，保留原样为"当时怎么想的"snapshot。**新读者从本节开始 15 分钟能 grok 完整 arc**：v3 → v6.3(第一次收官) → v6.5 rep dominant → **v6.6 arch×train-time super-mult breakthrough** → **v6.7 RL fine-tune close ceiling**。
+
+### TL;DR v6.7（一段话）
+
+**10 天从"训不出鸡兔算法"迭代到 v6.7 "5M 模型 FAR extrapolation 99.5%"**。同 5M 模型,同 wide_O v4 数据(200k train + aux [2,200]),FAR [201,500] em: 3.5%(learned PE) → 24.5%(RoPE) → 90%(+Grok) → 99.5%(+RL fine-tune)。**核心翻案**:v6.3 "arch 不重要"完全错,post-audit 发现 arch × train-time × RL 三 lever **super-multiplicative synergy**,每个单跑 +10-20 pp,联合起来 +96 pp。**最深洞察**:LLM "涌现能力"很可能是**data coverage × arch(RoPE-like relative PE)× 长训 regularization(grokking)× RL alignment 的 4-lever 乘积**,而不是任何单 factor 的涌现;每个 lever 单跑都被另外三个 hold back,联合 unlock 后才看到 phase transition。
+
+### v6.3 → v6.7 arc extension(Day 8-10)
+
+```
+Day 8-9 (§5.16-5.21):  v6.3 双 gate → v6.5 rep-vs-uniq 精细化
+                         wide_O v4 (125 uniq × 44 rep) NEAR 100%
+                         grok-a sweep (wd=0.5, 100k iter) —— pre-fix 判死刑
+
+Day 9   (§5.22):       BoN N=10 direct verify paradigm ceiling ≈ 9.5%
+Day 9   (§5.23-5.25):  Mech interp — attention diffuse, MLP is mechanism
+                         L2H5 = "H reader" 但 ablation 无影响(冗余)
+                         layer-level: L2=D subskill, L3=r subskill
+
+--- Day 10 turning point ---
+
+Day 10  (§5.26 NoPE):   pilot 假 "PE 不 essential"(有 bug 版本)
+
+Day 10  (§5.27):       ⭐ RoPE 4-point 实验时撞出 `_rev_pad` late-binding bug
+                         (default int=3 抓死,set_rev_width(4) 改不了)
+                         All fmt_O eval since §5.14 都用 3 位 prompt 喂 4 位模型
+                         Baseline 恰好 robust,RoPE 因 strict-position 触发暴露
+                         → 修 bug + RoPE FAR 24.5% (baseline 3.5% × 7×)
+
+Day 10  (§5.28 audit):  10 ckpt 重跑 → **3 个历史结论全部翻案**
+                         §5.16 "双 gate 小模型 IID cap": 假,小 IID 100%
+                         §5.17-18 "depth saturation curve/dip": 假,全 100%
+                         §5.21 "grok-a flop": 反,grok-a FAR 17% real winner
+
+Day 10  (§5.29):       ⭐⭐⭐ RoPE + Grok stack: FAR 3.5% → **90%**
+                         super-multiplicative synergy (predict 40-60%, get 90%)
+                         val_loss 4 变体全 0.143-0.144 完全 blind
+
+Day 10  (§5.30):       small (0.79M) + RoPE + Grok = FAR 19% (negative)
+                         capacity 是 hard floor,~5M enough <1M 不行
+                         "越小越好"(§5.28 hint)一次性 falsify
+
+Day 10  (§5.31):       bucket 诊断: FAR 90% = [201,300] 96.5% + [301,500] 82%
+                         残余 ceiling 集中在"aux 边界外 100 以远"段
+
+Day 10  (§5.32):       BoN N=10 on stack: 87.3 → 91.3% (+4 pp)
+                         test-time compute 是 additive lever,不 super-mult
+
+Day 10  (§5.33):       ⭐⭐⭐⭐ RL fine-tune (REINFORCE + KL, 3 min GPU):
+                         FAR 87.3 → 99.5%,IID/BELOW/NEAR 零遗忘
+                         "90% ceiling" 揭示为 sampling policy 问题,不是 capability
+                         → v6.7 final
+```
+
+**每个 milestone 都 direct 验证或 falsify 上一个 hypothesis** —— 但 v6.3 → v6.7 里有个尖锐的 methodology moment:**一个 eval pipeline bug(`_rev_pad` late-binding)潜伏 15 天污染 6 个章节**。是 §5.27 加了一个 stricter arch(RoPE)才把 bug 撞出来。**Meta-lesson:strict-arch ablation 是天然 pipeline auditor**。
+
+### v6.7 最终公式(4-lever stack)
+
+```
+FAR em ≈ f_arch × f_train-time × f_RL × g(aux_coverage)
+
+  f_arch (RoPE 相对位置)    +21 pp 单跑;与 grok 联合 super-multiplicative
+  f_train-time (grokking)  +14 pp 单跑;与 arch 联合 super-multiplicative
+    ↑ 两者 stack: baseline 3.5% → 90% (26×, super-multiplicative +86 pp)
+
+  f_RL (post-train verifier)  基于 stack close 剩 10% ceiling → 99.5%
+    ↑ RL 是 sampling policy 修复,不是 capability 增加
+
+  g(aux_coverage) = boundary 位置
+    aux [2, 200] → 邻域 [201, 300] 近满,远段 [301, 500] 有 subskill lookup ceiling
+    RL 已 close 到 99.5%,剩 0.5% 才需 aux 扩展
+```
+
+**四段 lever ranking(v6.7 定型)**:
+
+| Rank | Lever | FAR em | vs baseline 3.5% | 成本 |
+|---|---|---|---|---|
+| 1 ⭐⭐⭐⭐ | **RoPE + Grok + RL fine-tune** | **99.5%** | **28×** | ~45 min GPU |
+| 2 ⭐⭐⭐ | RoPE + Grok stack (§5.29) | 90.0% | 26× | 40 min GPU |
+| 3 | RoPE + Grok + BoN N=10 | 91.3% | 26× | +10× inference |
+| 4 | RoPE alone (§5.27) | 24.5% | 7× | 20k iter |
+| 5 | Grok alone (§5.21 audited) | 17.0% | 4.9× | 100k iter |
+| 6 | NoPE / ALiBi | 7-9% | 2-2.5× | 20k iter |
+| — | 5M baseline | 3.5% | 1× | — |
+
+### 5 个最深 finding(v6.3 → v6.7 新增)
+
+**Finding 5:arch × train-time super-multiplicative,不是 additive**
+
+RoPE 单跑 +21 pp,grokking 单跑 +14 pp,预测 additive 应 +35 pp。实测 stack +86 pp(远超乘性)。**说明每 lever 单跑时都被另一个 hold back**:learned PE 让 grokking 无从 encode relative algorithm(每个 OOD position 都是 UNK vector);短训 20k 让 RoPE 的 relative structure 没时间 compile。**必须两者同时 unlock 才看到 phase transition**。—— §5.29
+
+**Finding 6:val_loss 完全 blind 到 arch × train-time 差异**
+
+4 个模型(baseline / NoPE / RoPE / RoPE+Grok / +RL)val_loss 全在 0.143-0.144 内(noise band ±0.001),但 FAR em 差 26× ~28×(3.5% → 99.5%)。**teacher-forced next-token loss 完全无法探测 autoregressive multi-step extrapolation** —— phase transition 只发生在 generation 层面。Meta-lesson:做 arch/regularization sweep 时**必须周期性 autoregressive em 评测**,不能只看 val_loss curve。—— §5.29 & §5.33
+
+**Finding 7:strict-arch ablation 是天然 pipeline auditor**
+
+`_rev_pad(n, width=_REV_WIDTH)` 默认参数 late-binding bug 潜伏 15 天,污染 6 个实验章节(§5.16-5.21)。**baseline 恰好 robust to malformed prompt,self-audit loop 完全触发不了**。**RoPE 因为对 absolute position 更 strict,3 位 prompt 一喂就崩到 1% —— 立刻暴露 bug**。Meta-lesson:未来做 arch/regularization sweep,**优先跑 stricter 变体来 audit pipeline**,别只用 baseline 做 sanity check。—— §5.27
+
+**Finding 8:capacity 是 hard floor,不是 lever**
+
+§5.28 audit 看到 small (0.79M) 单跑 FAR 26% 高于 5M baseline 3.5%,一度推想 "越小越好 by regularization"。**直接测 small + RoPE + Grok stack:FAR 只 19%,比 small alone 还低**。真相:**capacity 是 threshold,~5M 够 encode 三层 (position → digit → arithmetic) mapping,<1M 只够两层,algorithm compilation 需要最小容量**。**§5.28 hint 是 local point estimate,不是 general law** —— hint 出现后必须直接实验验证,不能推广。—— §5.30
+
+**Finding 9:post-training RL 是"近乎免费"的最后 lever(带 verifier 的任务里)**
+
+3 min GPU RL fine-tune(600 步 REINFORCE + KL)把 FAR 从 87.3% → 99.5%,IID/NEAR/BELOW **零遗忘**。KL to frozen reference 是 anchor 关键,rollout 完全不 touch IID 段但 IID 保 100%。**"90% ceiling" 是 sampling policy 问题,不是 capability 问题** —— model stochastic sampling 下已经能对 99%+,greedy 偶尔挑错。RL reshape 分布让 greedy 也总对。**这是 project 里最出乎意料的 breakthrough**:比 arch × train-time stack 便宜 10-15×,但 lift 更大(+10 pp)。—— §5.33
+
+### v6.7 LLM 启示(replace v6.3 版)
+
+之前 v6.3 说 "GPT-4 = Scale × Coverage 双维度乘积",v6.7 精细化为**4-lever 乘积**:
+
+- **arch (相对位置 encoding)**:GPT-4 用 RoPE。**RoPE 不是选做题,是 phase transition 的 unlock 条件** —— 用 learned PE 就算无限训也上不去
+- **train-time regularization (长训 + 强 wd)**:GPT-4 训 trillions of tokens with regularization,不是"预训完就 stop"。这与 grokking 观察一致
+- **arch × train-time super-multiplicative** —— **两者必须同时**才 unlock 真 algorithm learning。这解释为什么 scale up learned-PE 模型或短训 RoPE 模型都不见 "涌现"
+- **post-training RL (RLHF / RLVR)**:GPT-4 里 InstructGPT-style RL 是 mandatory step,不是可选优化。**RL 揭示 model 内部已有 capability,只是 sampling policy 需要调**。这与本 project §5.33 finding 完全一致
+- **data coverage** 决定 "剩 0.5% gap 的位置":aux 覆盖到 [2, 500] 才把 [301, 500] 拉满,但 3-lever stack 已经把绝大部分 unlock 了
+
+**修辞 correction v6.7**:之前 v6.3 说 "GPT-4 涌现是 data coverage 假象",v6.7 revise 为:**LLM 涌现是 4-lever 联合 super-multiplicative + RL polish 的结果,每个 lever 单跑都 hold each other back,合起来才见 phase transition**。这**比 v6.3 更接近真相**,也更能解释为什么 pre-2020 学界看不到 emergence(用错了 arch 或没做 RL)。
+
+### 项目最重要的 6 个方法论 lesson(final,替换 v6.3 版 4 条)
+
+1. **loss 数学诊断**:起步 loss 偏离 ln(V) > 1.0 → 怀疑 pipeline(Round 1,v6.3 版)
+2. **OOD 怀疑论**:LM 99% 别恭喜,问 OOD split 测了没(Round 2,v6.3 版)
+3. **conditional per-step**:考察 subskill transfer 看 given prior correct 的 conditional(Round 3,v6.3 版)
+4. **技术价值 = f(应用场景)**:同一个 loss_mask 在 fmt_L 无用,fmt_O 是关键(Round 4,v6.3 版)
+5. **stricter ablation 是 pipeline auditor**(v6.7 §5.27) —— baseline robust 可能掩盖 bug,strict-arch (RoPE / relative-only)撞出来最快
+6. **val_loss 完全 blind 到 phase transition**(v6.7 §5.29 & §5.33) —— arch/regularization sweep 时必须周期性 autoregressive em 评测。**val_loss 看不到的东西,em 里放大 26×**
+
+### v6.7 交付物(replace v6.3 clause)
+
+**新增代码(§5.26-5.33)**:
+- `model.py` +100 行:`GPTConfig.pe_type={learned,none,rope,alibi}` + RoPE + ALiBi 实现,`use_pos_emb` legacy 兼容
+- `train.py` +10 行:pe_type 参数 wiring
+- `eval_cr.py`:修 `_rev_pad` late-binding bug + 加 `--h-buckets` CLI + 加 `--ablate-head` CLI
+- **新** `train_rl.py`:340 行 minimal REINFORCE + KL + GRPO-lite baseline
+
+**新增 configs**:
+- `train_cr_wide_5m_O_v4_nope.py` / `_rope.py` / `_alibi.py` / `_rope_grok.py`
+- `train_cr_wide_small_O_v4_rope_grok.py`
+- `train_rl_rope_grok.py`
+
+**新增 ckpts(不入 git)**:
+- `out-cr-wide-5m-O-v4-{nope,rope,alibi,rope-grok}/` — 4 PE 变体
+- `out-cr-wide-small-O-v4-rope-grok/` — capacity floor negative
+- `out-cr-rl-rope-grok/` — v6.7 final ckpt(FAR em 99.5%)
+
+**§5.26-5.33 新增 commits**:
+- `bb764d5` NoPE pilot(bug 版)
+- `db93ddb` RoPE + `_rev_pad` bugfix,FAR 24.5%
+- `ea6e51f` archive audit,3 结论翻案
+- `7656285` **RoPE + Grok stack:FAR 90%**
+- `5cf05af` small stack negative
+- `850908a` `--h-buckets` CLI + 诊断
+- `46a1807` BoN stack:FAR 91.3%
+- `5c2f5a4` **RL fine-tune:FAR 99.5%**
+
+**认知产出(增补)**:§5.26-5.33 八个 milestone,含 audit 表 + super-multiplicative synergy 分析 + RL methodology,~1200 行新笔记。
+
+### v6.7 一段"给未来自己"的话
+
+> **v6.3 收官时以为 project 结束了**(双 gate 模型看似完整,arch fix 被证伪,只剩 grokking 一条 pilot 路)。**但 v6.3 里其实有一个 pipeline bug 和一个未测的 stack**,把整个"paradigm ceiling ~10%"picture 严重压低。
+>
+> **§5.27 加一个 RoPE ablation 花了 40 min,连锁反应出 audit + stack + RL 四个 breakthrough** —— 每个都单独超过 v6.3 全部工作的量级。**这是本 project 最深的 methodology lesson**:**当你以为"到顶了"的时候,最可能的是"某个 axis 还没实验"或"某个 pipeline 环节有 silent bug"**。
+>
+> **v6.7 定型 picture 是 4-lever super-multiplicative × RL polish**。下次做 OOD / generalization / algorithm learning project 时,minimum viable audit 是:
+> - **stricter-arch ablation 是 must**(RoPE 之外还有:NoPE、ALiBi、relative-only 变体) —— 用最 sensitive 的模型撞 pipeline bug
+> - **autoregressive em 是 must**,val_loss 是骗人的
+> - **正交 lever 组合是 must** —— 单跑各 +20 pp 不代表 stack 就 +40 pp,可能 super-multiplicative
+> - **post-training RL 是最便宜的最后 lever**,3 min GPU,尤其在有 verifier 的场景(算术/编程/数学)
+>
+> **最深的 meta-lesson v6.7**:**任何"最终结论"都是"下一个 milestone 之前的临时 checkpoint"**。v3 到 v6.7 迭代了 9 次(v3/v4/v5.0-5.3/v6.0-6.3/v6.5/v6.6/v6.7),**每次都以为收官了,每次都被下一个实验推翻或精细化**。project 的价值不在最高的 99.5%,而在**每次翻案都能 pin 到一个具体 bug 或漏跑的 lever**。这才是 real science 的样子。
+
+---
+
+## 14 · Grand Summary · Project 收官（v6.3，2026-07-06 archive）
 
 > 8 天 13 实验的完整总结。**这一节是 project 的最上层入口**——第一次翻笔记的人,从这里开始 10 分钟能 grok 全部故事,然后再去看 §5 各 milestone 细节。
 

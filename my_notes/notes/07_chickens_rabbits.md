@@ -92,7 +92,7 @@
 - [§8 git commit log](#8--git-分支与版本管理) — **19 个 commit hash 查询**
 - [§9 验证 rules](#9--验证mandatory-verification-规则要求)
 - [§10 时间陷阱](#10--时间陷阱--别踩的坑)
-- [§11 Q&A 4 Rounds 21 题](#11--消化-qa--round-1s2s3-baseline--round-2s5a-cot--round-3v51v52-概念--round-4v6-收官-grand-review) — Round 1(6)+Round 2(6)+Round 3(4)+Round 4(5)
+- [§11 Q&A 5 Rounds 25 题](#11--消化-qa--round-1s2s3-baseline--round-2s5a-cot--round-3v51v52-概念--round-4v6-收官-grand-review) — Round 1(6)+2(6)+3(4)+4(5)+**5(5, v6.7 paradigm architecture)** ⭐
 
 ### 🎓 收官
 
@@ -108,7 +108,7 @@
 2. **§14.2 Grand Summary v6.7** — 15 分钟完整 arc 总结(v3 → v6.7,FAR 3.5% → 99.5%)
 3. **§5.3 主对比表** — 12 行数字 side-by-side
 4. **§5.20 4-way wide_O archive** — v6.5 关键 3 数据点对照
-5. **§11 Round 4 Q&A(5 题)** — 方法论 meta-lessons
+5. **§11 Round 5 Q&A(5 题)** — paradigm architecture: 正交 lever / super-mult / GPT-4 类比
 6. **§5.14 fmt_O(🎉)** — project 最漂亮的实验(OOD em 100%)
 
 ---
@@ -123,6 +123,7 @@
 - [x] **Q&A Round 2（S5.a 沉淀）** ✅ 2026-06-25 下午（6 题工程沉淀 Q&A 写入 §11，核心发现："查表 vs 算法"）
 - [x] **Q&A Round 3（v5.1/v5.2 概念消化）** ✅ 2026-07-01 傍晚（4 题 cascade 数学诊断 Q&A 写入 §11，核心洞察："conditional per-step 才能 disentangle context mismatch vs cascade 累积"）
 - [x] 🎉 **Q&A Round 4（v6 grand review 收官）** ✅ 2026-07-03 上午（5 题 meta-lesson，回看整个项目 12 实验：v6 recipe 4 条件缺一不可 direct 证明、loss_mask 反差 96pp 揭示"技术价值 = f(场景)"、v6 recipe 可迁移到 task decomposability 强的场景）
+- [x] 🎉🎉 **Q&A Round 5(v6.7 paradigm architecture)** ✅ 2026-07-09 上午(5 题聚焦 §5.26-5.33:super-multiplicative synergy 机理、RL vs Grok 效率差、greedy/BoN/RL 三档 mechanism、strict-arch 是 pipeline canary、v6.7 recipe 到 GPT-4 scale 的类比映射)
 - [x] **S4 eval 脚本 `eval_cr.py`** ✅ 2026-06-25 傍晚（format-aware, 4 metric 含 per-step，10 条 parser sanity）
 - [x] **扩 H 实验**（train H=[2,40] fmt_B）✅ 2026-06-25 晚（旧 OOD [21,40] em 飙到 100%、真 OOD [41,50] 仍 0%——**查表论 v2 边界硬**，见 §5.5；commit `d7f240a`）
 - [x] **S5.c 反序数字**（fmt_C，2026-06-29 上午）✅ — IID 100% / OOD 0%（反序 alone 不撬 OOD，但 OOD digit 73.7% 三家最高）；commit `3d25662`
@@ -4456,6 +4457,187 @@ Round 1: 单数字判断 pipeline    (loss 数学)
 Round 2: 多数字判断"泛化 or 查表" (OOD 概念)
 Round 3: 数字条件关系找 root cause (cascade 数学)
 Round 4: 全项目回看 → 方法论 meta-lesson  (v6 recipe + 可迁移性)
+```
+
+---
+
+### Round 5 · v6.7 收官 grand review 2.0（2026-07-09 上午,用 4-lever stack + RL 视角回看 §5.26-5.33）
+
+> 5 题聚焦 §5.26-5.33 的 5 个 breakthrough。回答里的 punchline 与 §14.2 finding 5-9 一一对应,是"给未来自己"看的**方法论晶体**。
+
+#### Q5.1 · RoPE + Grok 单跑各 +20 pp,叠加 +86.5 pp,为什么是 super-multiplicative?⭐⭐⭐
+
+**答**:两个 lever 各自被**另一个 lever 造成的 bottleneck 掐着 ceiling**,单跑时看到的 +20 pp 是"在被掐的天花板下能爬多高"。同时松开两个 bottleneck 后打开的空间**远大于每人各自的爬升区间之和**。
+
+**具体机制**:
+
+- **RoPE alone(20k iter,wd=0.1)**:relative-position 结构在每个 head 里都有,但 20k iter 不够让模型 compile 出多步 relative-position 算法。Ceiling 在"MLP subskill lookup 已学 + relative-position 结构可用,但两者没时间 wire 起来"。**+21 pp 是 relative encoding 带来的边缘外推福利,不是真算法**。
+- **Grok alone(learned PE,100k iter,wd=0.5)**:长训 + 强 wd 想 phase-transition 到 relative-algorithm,但 learned PE 对 H>100 是 UNK vector —— **在 embedding 层就把位置信息毁掉了,后面 6 层怎么训都补不回来**。Ceiling 在"想学 relative 但每个 OOD 位置都是随机噪声"。**+14 pp 是 wd 带来的 IID 内 subskill 抹平的边际福利**。
+- **RoPE + Grok stack**:RoPE 修好"位置信息可以持续外推",Grok 提供"训练时间 compile 出算法"。**两个 bottleneck 同时解除** → 模型真的把 subskill lookup 编译为 relative-position 算法,FAR 90%。
+
+**类比**:两把锁的门。锁 A(RoPE)开着 = 有能力表达算法但没时间学。锁 B(Grok)开着 = 有时间学但表达不出来。**只开 A 或 B,门都不开;两把都开,门直接大开**。
+
+**Punchline v5.1**:*"单跑各 +20 pp 不是 additive 起点,是 stack 未 unlock 时的 ceiling —— 每 lever 都被另一个 hold back。想估 stack 上限,先问'两个是不是攻击不同 bottleneck',是的话预算加倍再加倍才够。"*
+
+---
+
+#### Q5.2 · 为什么 RL fine-tune 3 min 就能超过 grokking 100k iter 40 min 的效果?⭐⭐⭐
+
+**答**:因为**两者做的是本质不同的事**。Grokking 是**教会模型新能力**(SGD on next-token, 花时间是必然的);RL 是**调整已有能力的 sampling policy**(reshape 概率分布,只需小 update)。
+
+**具体对比**:
+
+| 维度 | Grokking(100k iter,~40 min) | RL fine-tune(600 步,~3 min) |
+|---|---|---|
+| 目标 | learn new capability | reshape sampling policy |
+| 信号 | cross-entropy on all tokens | reward on outcome only |
+| 数据分布 | 全 wide_O_v4 | 只 FAR [201, 500] |
+| 每 step 的 gradient | 稠密,遍布全网络 | 稀疏,只在 wrong→right 边界处 |
+| 学的东西 | 相当于建索引 / 编译算法 | 相当于给已建的索引升级排序权重 |
+
+**关键**:pre-RL 87.3% greedy,但 BoN N=10 = 91.3%。**这说明模型 stochastic sampling 下有 ≥91% 的能力 already there** —— greedy 87.3% 只是偶尔在 mode 上挑错。RL 就是把这个"偶尔挑错"直接压平,让 greedy 也总对。
+
+**类比**:Grok 是**学骑自行车**(几个月,SGD 一路摸)。RL 是**在你已经会骑的车上调座椅高度和把手角度**(5 分钟,pinpoint 优化)。
+
+**Punchline v5.2**:*"post-training RL 的成本远低于 pretraining lever,因为它不是'教会模型',而是'把已有能力的 sampling 分布梳平'。有 verifier 的场景里,RL 应该是标配最后一步。"*
+
+---
+
+#### Q5.3 · pre-RL 87.3% greedy vs BoN 91.3% vs post-RL 99.5% greedy —— 这三档在 mechanism 上分别代表什么?⭐⭐⭐
+
+**答**:三档对应**三种正交现象** —— capability(能力上限)、sampling(采样策略)、distribution shape(分布形状)。
+
+| 档位 | 数字 | mechanism | 揭示什么 |
+|---|---|---|---|
+| **pre-RL greedy** | 87.3% | argmax on flat-ish distribution | 当前 weights + greedy 的**具体分数**(与真能力可能有 gap) |
+| **pre-RL BoN N=10** | 91.3% | multi-sample + verifier picks best | 当前 weights 的**真 capability 下界**(model at least sometimes can) |
+| **post-RL greedy** | 99.5% | argmax on RL-sharpened distribution | RL 后的**分布形状** —— mode 被移到了正确 answer 上 |
+
+**注意 subtle detail**:pre-RL BoN(91.3%)< post-RL greedy(99.5%)。**这说明 RL 不只是"多采几次"** —— 如果只是,那 pre-RL BoN 100 次也就 92-93% 顶天。RL **真的重塑了分布**,把之前"有时候是错的 mode"的 sample 变成了"总是对的 mode"。
+
+**三层框架**(能力 vs 采样 vs 分布形状):
+
+```
+Capability ceiling  = max em over all sampling policies
+                    = 大约 ≥99%(post-RL 99.5% 是下界,可能更高)
+Sampling policy    = how you sample from p(y|x)
+                    = 影响 em 在 capability 之下的落点
+Distribution shape = 具体的 p(y|x),由 weights 决定
+                    = RL 直接调这个
+```
+
+pre-RL greedy 有 12 pp gap 是"分布形状不够 sharp"。BoN 用 verifier 部分绕过分布形状(选出 mode 附近的最好那个),但对"分布里连一次都没到对的 mode"的 sample 无能为力。post-RL greedy = "分布重塑到 mode 就是 correct answer",一步到位。
+
+**Punchline v5.3**:*"greedy accuracy 揭示分布形状 sharpness,BoN 揭示 capability 下界,两者的 gap = 'sampling policy 有多受限于分布形状'。RL 是修复分布形状的最短路径。"*
+
+---
+
+#### Q5.4 · `_rev_pad` bug 15 天潜伏,暴露的 pipeline auditing 一般规律是什么?为什么 RoPE 是"天然 bug detector"?⭐⭐
+
+**答**:一般规律是 —— **baseline 可以"稳定地错"**,而所有 ablation 都从 baseline 派生;当 baseline 对 bug robust,整个 audit loop **完全触发不了**,bug 潜伏无期限。
+
+**bug 潜伏机制复盘**:
+- `_rev_pad(n, width: int = _REV_WIDTH)` 默认参数 late-binding,`set_rev_width(4)` 改不了 def 时抓的旧值 3
+- prompt 被写成 3 位喂 4 位模型
+- **learned PE / NoPE / ALiBi 三个 baseline 都恰好 robust**:输出仍是 4 位,parser regex 也照 match,em 数字看着都对
+- 直到 RoPE 因为 strict-position 撞上,em 从 100% 直接掉 1% —— 才终于暴露
+
+**RoPE 为什么是天然 bug detector**:
+
+| 属性 | Learned PE / NoPE / ALiBi | RoPE |
+|---|---|---|
+| 位置编码方式 | flexible(可学 / 隐式) | 强制 rotary(每 position 一个固定 angle) |
+| 对 prompt 长度错位的容忍 | 高(可当近似"另一种输入") | 低(rotary 直接错位) |
+| bug 症状 | em 不掉 | em 一泻千里 |
+
+**RoPE 相当于 pipeline 的过敏 canary** —— 其他模型能忍的空气它忍不了。当 canary 死了,别怪 canary 娇气,先查空气。
+
+**一般 pipeline auditing 规律**:
+
+1. **添加 stricter 变体到 baseline 集** —— baseline 若"flexible",配一个"strict"版本对照
+2. **信号在 discrepancy,不在 unanimity** —— 所有变体给同样数字,要么 ablation 无意义,要么 test infra 支配 —— 后者是 bug
+3. **不要相信"顺",要相信"崩"** —— 一个模型崩到 1% 而其他都 100%,先假设是 pipeline 在告诉你事情,不是模型娇气
+4. **RL / grokking 之外,加一个 arch stricter 变体** —— 它是"免费的 pipeline sanity check"
+
+**Punchline v5.4**:*"当所有 baseline 一致给出 pretty numbers,不要庆祝,要担心 —— 你可能踩到了一个所有 baseline 都 robust 的 pipeline bug。加一个 strict-arch 变体做 canary,它崩了才是好事。"*
+
+---
+
+#### Q5.5 · v6.7 这个 recipe 从 0.79M-5M nanoGPT 迁移到 GPT-4 scale,类比映射是什么?哪些环节 direct 类比,哪些不 direct?⭐⭐⭐
+
+**答**:**mechanism 强 transfer,numbers 不 transfer,meta-lesson 最 transfer**。
+
+**Direct 类比(mechanism 层)**:
+
+| v6.7 lever | GPT-4 scale 对应 | 类比强度 |
+|---|---|---|
+| **RoPE(相对位置)** | GPT-4 / LLaMA / DeepSeek 都用 RoPE 或 ALiBi | ⭐⭐⭐ 直接 |
+| **Grokking(长训 + wd)** | 万亿 token 训练 + 标准 wd,pretraining 就是 scale-up 版 grokking | ⭐⭐⭐ 直接 |
+| **arch × train-time super-multiplicative** | scale-up 学界看到的"emergence" = 同一 super-mult,只是维度多了 | ⭐⭐ 强类比 |
+| **post-training RL(verifier reward)** | InstructGPT RLHF / DeepSeek RLVR(verifier-based) | ⭐⭐⭐ 直接 |
+| **data coverage 决定 boundary** | GPT-4 internet-scale 训练 but 罕见组合仍 fail | ⭐⭐⭐ 直接 |
+| **strict-arch 是 pipeline auditor** | LLM eval 里 stricter benchmark(GSM-Hard vs GSM8K)同样作用 | ⭐⭐ 强类比 |
+
+**Non-direct(numbers / specific 层)**:
+
+| 我们的 finding | GPT-4 scale 差异 |
+|---|---|
+| capacity floor ~5M | 每个"算法"的 floor 不同;GPT-4 大是因为要 encode **无数**算法 |
+| super-mult 比例(+35 pp 预测 vs +86 实测)| 具体比例 depend on task 与 lever 交互,不 portable |
+| RL 只 reshape sampling(不 add capability) | 只在 **deterministic verifier** 下成立;RLHF 有 noisy reward,故事更复杂 |
+| val_loss 完全 blind | LLM 用 benchmark suite(MMLU / HELM)作 em 代理,但仍有 phase-transition-blindness |
+| grokking sharp phase transition | LLM scale 上被大量 domain 平滑,不 sharp |
+
+**Meta-lesson 最强 transfer**(不论 scale 都成立):
+
+1. **正交 lever 组合是 must** —— 单跑不代表 stack,可能 super-mult
+2. **strict-arch ablation 是 pipeline canary** —— LLM eval 里对应 stricter benchmark
+3. **val_loss 是骗人的**,em 才是真的 —— LLM 里对应 val perplexity vs downstream benchmarks
+4. **有 verifier 的场景 post-training RL 是标配** —— GPT-4 里 RLVR 已经是主流
+5. **capacity 是 threshold 不是 lever** —— GPT-4 的 scale 提供"多算法容量",不是"单算法质变"
+
+**Punchline v5.5**:*"scale up 不改变 mechanism,只放大它。0.79M 到 GPT-4,四 lever + 两个 gate(capacity threshold, RL polish)的 picture 相同,只是每个 lever 需要的绝对 iter / token / compute 量级不同。想理解 GPT-4,先在 nanoGPT 上把 mechanism 玩透,再乘 scale factor。"*
+
+---
+
+### Round 5 整体评估
+
+| 题 | 关键洞察 |
+|---|---|
+| Q5.1 super-multiplicative ⭐⭐⭐ | 单跑 ceiling 是"被另一个 lever hold back",stack 才见真 unlock |
+| Q5.2 RL vs Grok 效率差 ⭐⭐⭐ | RL 调分布形状,Grok 学新能力;后者贵前者近乎免费 |
+| Q5.3 三档 mechanism ⭐⭐⭐ | greedy = 分布 sharpness,BoN = capability 下界,RL = 分布重塑 |
+| Q5.4 pipeline auditing ⭐⭐ | strict-arch 是 canary,信号在 discrepancy 而非 unanimity |
+| Q5.5 GPT-4 类比 ⭐⭐⭐ | mechanism 直接 transfer,numbers 不,meta-lesson 最强 |
+
+**Round 5 vs 前 4 Round**:
+
+| Round | 内容风格 | 认知层 |
+|---|---|---|
+| Round 1（S2/S3） | 数学推导 | loss / cross-entropy |
+| Round 2（S5.a） | 工程沉淀 | eval bug / OOD |
+| Round 3（v5.1/5.2） | 数学诊断 | cascade / conditional per-step |
+| Round 4（v6） | grand review | v6 recipe + task decomposability |
+| **Round 5（v6.7）** | **paradigm architecture** | **正交 lever / super-mult / mechanism vs numbers** |
+
+**Round 5 最值得带走的 5 句话**(与前 4 Round punchline 并列):
+
+- Round 1:*"起步 loss 偏离 ln(V) > 1.0 → 立刻怀疑 pipeline"*
+- Round 2:*"LM 拿 99% 别恭喜,先问 OOD split 测了没"*
+- Round 3:*"subskill transfer 看 conditional per-step,不看 marginal"*
+- Round 4:*"技术价值 = f(应用场景) —— 死胡同先问 axis 列全没"*
+- **Round 5.1**:*"单跑各 +20 pp 不是 additive 起点,是 stack 未 unlock 时的 ceiling"*
+- **Round 5.2**:*"RL 是调分布形状,不是学新能力,故快;grok 是学新能力,故慢"*
+- **Round 5.4**:*"所有 baseline 一致给 pretty numbers 别庆祝,担心 —— pipeline 可能全 robust 到同一 bug"*
+
+**Round 1-5 累计 25 题(6+6+4+5+5),构成从工程诊断 → paradigm architecture 的完整层递**:
+
+```
+Round 1: 单数字判断 pipeline    (loss 数学)
+Round 2: 多数字判断"泛化 or 查表" (OOD 概念)
+Round 3: 数字条件关系找 root cause (cascade 数学)
+Round 4: 全项目回看 → 方法论 meta-lesson (v6 recipe)
+Round 5: 4-lever stack + RL → paradigm architecture  (正交 lever / super-mult / mechanism transfer)
 ```
 
 ---

@@ -14,7 +14,7 @@
 
 ### 🚀 3 秒找到最想看的
 
-- [**§14.2 · Grand Summary v6.7(最终收官)**](#142--grand-summary-v67--project-最终收官2026-07-08-傍晚final-) — 10 天 arc,4-lever stack + RL,FAR 3.5% → 99.5% ⭐
+- [**§14.2 · Grand Summary v6.7(最终收官)**](#142--grand-summary-v67--project-最终收官2026-07-08-傍晚final-) — 10 天 arc,4-lever stack + RL,FAR 3.5% → **99.44 ± 0.08%**(3-seed) ⭐
 - [§14 · Grand Summary(v6.3 archive)](#14--grand-summary--project-收官v632026-07-06-archive) — mid-project close-out 快照
 - [**顶部 TL;DR:术语速查 + 4 问 4 答**](#tldr--术语速查--4-问-4-答核心s5-系列收口2026-07-01-自答验证-grok) — 全项目术语字典 + 21 题 Q&A 的核心 5 题
 - [**§5.20 · 4 次 wide_O 完整对照表**](#520--4-次-wide_o-完整对照表所有段--所有指标2026-07-07-下午archive) — 查具体数字用
@@ -83,7 +83,7 @@
 - [**§5.30 Small + RoPE + Grok(负结果)**](#530--s5z-small-079m--rope--grokcapacity-是-first-order-requirement越小越好-假说-falsify2026-07-08-下午) — **small stack FAR 19%,"越小越好" 假说 falsify**,capacity 是 first-order requirement
 - [**§5.31 FAR H-bucket 诊断**](#531--s5aa-ropegrok-的-far-按-h-分桶诊断90-不是均匀是邻域近满--远段-80两段2026-07-08-傍晚) — FAR 90% 拆解为 [201,300]=96.5% + [301,500]=~82%,`--h-buckets` CLI 参数
 - [**§5.32 BoN N=10 on RoPE+Grok**](#532--s5ab-bon-n10-stack-on-ropegrok-ckpttest-time-compute-是-additive-lever能-close-远段-4-7-pp2026-07-08-傍晚) — BoN 远段 +7.5 pp lift,全 FAR 87.3% → 91.3%,test-time compute 是 additive lever
-- [**§5.33 RL fine-tune on RoPE+Grok**](#533--s5ac-rl-fine-tune-on-ropegrok-stackfar-873--995零-iid-遗忘3-min-gpu2026-07-08-傍晚) — **REINFORCE + verifier reward,FAR 87.3% → 99.5%,zero forgetting,3 min GPU** ⭐⭐⭐⭐
+- [**§5.33 RL fine-tune on RoPE+Grok**](#533--s5ac-rl-fine-tune-on-ropegrok-stackfar-873--995零-iid-遗忘3-min-gpu2026-07-08-傍晚) — **REINFORCE + verifier reward,FAR 87.3% → 99.44 ± 0.08%**(3-seed, §5.33.d.2),zero forgetting,3 min GPU ⭐⭐⭐⭐
 
 ### 📚 参考章节(§6-§13)
 
@@ -105,7 +105,7 @@
 ### 🎯 6 个"必读"入口(按 grokking 深度排序)
 
 1. **顶部 TL;DR** — 5 分钟全项目术语速查
-2. **§14.2 Grand Summary v6.7** — 15 分钟完整 arc 总结(v3 → v6.7,FAR 3.5% → 99.5%)
+2. **§14.2 Grand Summary v6.7** — 15 分钟完整 arc 总结(v3 → v6.7,FAR 3.5% → **99.44 ± 0.08%**,3-seed)
 3. **§5.3 主对比表** — 12 行数字 side-by-side
 4. **§5.20 4-way wide_O archive** — v6.5 关键 3 数据点对照
 5. **§11 Round 5 Q&A(5 题)** — paradigm architecture: 正交 lever / super-mult / GPT-4 类比
@@ -3459,7 +3459,7 @@ python eval_cr.py --ckpt <path> --data-dir <path> \
 
 #### §5.33.d · 最终 eval(seed=2001 匹配 §5.31,n=200/bucket)
 
-| Split | Pre-RL(§5.31) | **Post-RL** | Δ |
+| Split | Pre-RL(§5.31) | **Post-RL(seed=42)** | Δ |
 |---|---|---|---|
 | IID [5,100] | 100.0% | **100.0%** | 0(**零遗忘**) |
 | BELOW [2,4] | 100.0% | **100.0%** | 0 |
@@ -3470,6 +3470,27 @@ python eval_cr.py --ckpt <path> --data-dir <path> \
 | **FAR avg** | 87.3% | **99.5%** | **+12.2 pp** |
 
 **Per-step 全部满或近满**:[401, 500] 那 1.5% 差异是 3/200 sample 出错,per-step 也是 98.5%/98.5%/98.5%,而不是某一步专门 fragile。属于极偶发。
+
+**§5.33.d.2 · Cross-seed 复跑(publication-ready,2026-07-09 上午)**
+
+seed=42 会不会是 lucky seed?加跑 seed=1000 和 seed=3000 两组,同 config 只改 `seed` 与 `out_dir`。**3 组数字对齐得极紧**,std < 0.1 pp:
+
+| Split | s42 | s1000 | s3000 | **mean ± std** |
+|---|---|---|---|---|
+| IID [5,100] | 100.0 | 100.0 | 100.0 | **100.0 ± 0.0** |
+| BELOW [2,4] | 100.0 | 100.0 | 100.0 | **100.0 ± 0.0** |
+| NEAR [101,200] | 100.0 | 100.0 | 100.0 | **100.0 ± 0.0** |
+| **[201, 300]** | 100.0 | 100.0 | 100.0 | **100.0 ± 0.0** |
+| **[301, 400]** | 100.0 | 100.0 | 100.0 | **100.0 ± 0.0** |
+| **[401, 500]** | 98.5 | 98.5 | 98.0 | **98.33 ± 0.24** |
+| **FAR avg [201, 500]** | 99.5 | 99.5 | 99.33 | **99.44 ± 0.08** |
+
+**Reproducibility 观察**:
+- IID/BELOW/NEAR + FAR 前两桶([201, 400]):3 seed **完全一致 100%**(0 std)—— RL 把这些段收敛到 stable attractor,已经 saturate
+- 只有远段 [401, 500] 有 0.5 pp jitter(98.5 / 98.5 / 98.0)—— **正是 §5.31 揭示的"aux 边界外 200 以远"最难段**,同 seed 差异也集中在这里
+- **FAR avg 跨 seed 稳定在 99.44 ± 0.08 pp,std < em 单点噪声(n=200 二项分布 std ≈ 0.5 pp)**,说明真实 seed variance 小于测量噪声下界
+
+**Publication-ready 数字**:**FAR em [201, 500] = 99.44 ± 0.08 pp (n=200/split × 3 seed × 3 bucket)**。剩下的 0.5% gap 全在 [401, 500] 的深远段,与 aux 边界外 200 以远重合,是 subskill lookup 边界问题(§5.31 分析的结构性 gap),不是 RL 训练 noise。
 
 #### §5.33.e · 3 个 finding
 
@@ -3497,7 +3518,7 @@ python eval_cr.py --ckpt <path> --data-dir <path> \
 
 | Rank | Lever | FAR em [201,500] | vs baseline 3.5% |
 |---|---|---|---|
-| 1 ⭐⭐⭐⭐ | **RL fine-tune on RoPE+Grok stack** | **99.5%** | **28×** |
+| 1 ⭐⭐⭐⭐ | **RL fine-tune on RoPE+Grok stack**(3-seed) | **99.44 ± 0.08%** | **28×** |
 | 2 ⭐⭐⭐ | RoPE + Grok stack alone (§5.29) | 90.0% | 26× |
 | 3 | RoPE + Grok + BoN N=10 (§5.32) | 91.3% | 26× |
 | 4 | 5M + RoPE alone (§5.27) | 24.5% | 7× |
@@ -3538,9 +3559,10 @@ python eval_cr.py --ckpt <path> --data-dir <path> \
 #### §5.33.j · 新增产物
 
 - **新** `train_rl.py`(~340 行,minimal REINFORCE + KL + GRPO-lite baseline)
-- **新** `config/train_rl_rope_grok.py`
-- **新 ckpt**:`out-cr-rl-rope-grok/ckpt.pt`(step 100, best FAR em = 100.0% at eval)
-- 训练时长 ~3 min(600 步 × 0.3 s/step,~180s)
+- **新** `config/train_rl_rope_grok.py` + `_s1000.py` + `_s3000.py`(3 seed 复跑)
+- **新 ckpt**:`out-cr-rl-rope-grok/ckpt.pt`(seed=42),`_s1000/ckpt.pt`,`_s3000/ckpt.pt`
+- 训练时长 ~3 min/seed × 3 = 9 min GPU 总
+- **FAR avg = 99.44 ± 0.08 pp**(3-seed mean±std,eval seed=2001,n=200/bucket)
 
 ---
 
@@ -4735,7 +4757,7 @@ Round 5: 4-lever stack + RL → paradigm architecture  (正交 lever / super-mul
 
 ### TL;DR v6.7（一段话）
 
-**10 天从"训不出鸡兔算法"迭代到 v6.7 "5M 模型 FAR extrapolation 99.5%"**。同 5M 模型,同 wide_O v4 数据(200k train + aux [2,200]),FAR [201,500] em: 3.5%(learned PE) → 24.5%(RoPE) → 90%(+Grok) → 99.5%(+RL fine-tune)。**核心翻案**:v6.3 "arch 不重要"完全错,post-audit 发现 arch × train-time × RL 三 lever **super-multiplicative synergy**,每个单跑 +10-20 pp,联合起来 +96 pp。**最深洞察**:LLM "涌现能力"很可能是**data coverage × arch(RoPE-like relative PE)× 长训 regularization(grokking)× RL alignment 的 4-lever 乘积**,而不是任何单 factor 的涌现;每个 lever 单跑都被另外三个 hold back,联合 unlock 后才看到 phase transition。
+**10 天从"训不出鸡兔算法"迭代到 v6.7 "5M 模型 FAR extrapolation 99.44 ± 0.08%"**(3-seed mean±std)。同 5M 模型,同 wide_O v4 数据(200k train + aux [2, 200]),FAR [201, 500] em: 3.5%(learned PE) → 24.5%(RoPE) → 90%(+Grok) → **99.44 ± 0.08%(+RL fine-tune,3 seed)**。**核心翻案**:v6.3 "arch 不重要"完全错,post-audit 发现 arch × train-time × RL 三 lever **super-multiplicative synergy**,每个单跑 +10-20 pp,联合起来 +96 pp,且**跨 seed std < 0.1 pp**,3 seed 3-bucket 前 5 桶全 100.0% 完全 reproducible。**最深洞察**:LLM "涌现能力"很可能是**data coverage × arch(RoPE-like relative PE)× 长训 regularization(grokking)× RL alignment 的 4-lever 乘积**,而不是任何单 factor 的涌现;每个 lever 单跑都被另外三个 hold back,联合 unlock 后才看到 phase transition。
 
 ### v6.3 → v6.7 arc extension(Day 8-10)
 
@@ -4795,7 +4817,7 @@ FAR em ≈ f_arch × f_train-time × f_RL × g(aux_coverage)
   f_train-time (grokking)  +14 pp 单跑;与 arch 联合 super-multiplicative
     ↑ 两者 stack: baseline 3.5% → 90% (26×, super-multiplicative +86 pp)
 
-  f_RL (post-train verifier)  基于 stack close 剩 10% ceiling → 99.5%
+  f_RL (post-train verifier)  基于 stack close 剩 10% ceiling → 99.44 ± 0.08%(3-seed)
     ↑ RL 是 sampling policy 修复,不是 capability 增加
 
   g(aux_coverage) = boundary 位置
@@ -4807,7 +4829,7 @@ FAR em ≈ f_arch × f_train-time × f_RL × g(aux_coverage)
 
 | Rank | Lever | FAR em | vs baseline 3.5% | 成本 |
 |---|---|---|---|---|
-| 1 ⭐⭐⭐⭐ | **RoPE + Grok + RL fine-tune** | **99.5%** | **28×** | ~45 min GPU |
+| 1 ⭐⭐⭐⭐ | **RoPE + Grok + RL fine-tune**(3-seed) | **99.44 ± 0.08%** | **28×** | ~45 min GPU + 3 min RL |
 | 2 ⭐⭐⭐ | RoPE + Grok stack (§5.29) | 90.0% | 26× | 40 min GPU |
 | 3 | RoPE + Grok + BoN N=10 | 91.3% | 26× | +10× inference |
 | 4 | RoPE alone (§5.27) | 24.5% | 7× | 20k iter |
@@ -4835,7 +4857,7 @@ RoPE 单跑 +21 pp,grokking 单跑 +14 pp,预测 additive 应 +35 pp。实测 st
 
 **Finding 9:post-training RL 是"近乎免费"的最后 lever(带 verifier 的任务里)**
 
-3 min GPU RL fine-tune(600 步 REINFORCE + KL)把 FAR 从 87.3% → 99.5%,IID/NEAR/BELOW **零遗忘**。KL to frozen reference 是 anchor 关键,rollout 完全不 touch IID 段但 IID 保 100%。**"90% ceiling" 是 sampling policy 问题,不是 capability 问题** —— model stochastic sampling 下已经能对 99%+,greedy 偶尔挑错。RL reshape 分布让 greedy 也总对。**这是 project 里最出乎意料的 breakthrough**:比 arch × train-time stack 便宜 10-15×,但 lift 更大(+10 pp)。—— §5.33
+3 min GPU RL fine-tune(600 步 REINFORCE + KL)把 FAR 从 87.3% → **99.44 ± 0.08%**(3 seed cross-run,§5.33.d.2),IID/NEAR/BELOW **零遗忘**。KL to frozen reference 是 anchor 关键,rollout 完全不 touch IID 段但 IID 保 100%。**"90% ceiling" 是 sampling policy 问题,不是 capability 问题** —— model stochastic sampling 下已经能对 99%+,greedy 偶尔挑错。RL reshape 分布让 greedy 也总对。**这是 project 里最出乎意料的 breakthrough**:比 arch × train-time stack 便宜 10-15×,但 lift 更大(+10 pp)。跨 seed std < 0.1 pp,前 5 桶(IID/BELOW/NEAR/[201,300]/[301,400])全部 100% 完全 reproducible,唯一 jitter 在 [401, 500] 的深远段 —— §5.33
 
 ### v6.7 LLM 启示(replace v6.3 版)
 
